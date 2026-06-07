@@ -492,3 +492,285 @@ async def ban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings["banned_sticker_packs"].append(pack_name)
         save_data()
         await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be de
+leted.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("This sticker pack is already banned.")
+
+async def unban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker from the banned pack to unban it.")
+        return
+    sticker = update.message.reply_to_message.sticker
+    pack_name = sticker.set_name
+    if not pack_name:
+        await update.message.reply_text("This sticker does not belong to a pack.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    if pack_name in settings["banned_sticker_packs"]:
+        settings["banned_sticker_packs"].remove(pack_name)
+        save_data()
+        await update.message.reply_text(f"✅ Sticker pack `{pack_name}` unbanned.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("This sticker pack was not banned.")
+
+async def pin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a message to pin it.")
+        return
+    try:
+        await update.message.reply_to_message.pin()
+        await update.message.reply_text("📌 Message pinned.")
+    except Exception as e:
+        await update.message.reply_text(f"Failed to pin: {e}")
+
+async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /filter word")
+        return
+    word = context.args[0].lower()
+    settings = get_chat_settings(update.effective_chat.id)
+    if word not in settings["filters"]:
+        settings["filters"][word] = "delete"
+        save_data()
+        await update.message.reply_text(f"🔍 Filter added for: {word}")
+    else:
+        await update.message.reply_text("Filter already exists.")
+
+async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /delfilter word")
+        return
+    word = context.args[0].lower()
+    settings = get_chat_settings(update.effective_chat.id)
+    if word in settings["filters"]:
+        del settings["filters"][word]
+        save_data()
+        await update.message.reply_text(f"✅ Filter removed for: {word}")
+    else:
+        await update.message.reply_text("Filter not found.")
+
+async def antispam_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    settings["anti_spam"] = True
+    save_data()
+    await update.message.reply_text("🛡️ Anti-spam enabled.")
+
+async def antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    settings["anti_spam"] = False
+    save_data()
+    await update.message.reply_text("✅ Anti-spam disabled.")
+
+async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /forcesubscribe @channelusername\nTo remove: /forcesubscribe off")
+        return
+    channel = context.args[0]
+    chat_id = update.effective_chat.id
+    settings = get_chat_settings(chat_id)
+    if channel.lower() == "off":
+        settings["force_subscribe"] = None
+        save_data()
+        await update.message.reply_text("Force subscribe removed.")
+        return
+    if not channel.startswith("@"):
+        await update.message.reply_text("Channel must start with @")
+        return
+    settings["force_subscribe"] = channel
+    save_data()
+    await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
+
+async def media_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    settings["media_off"] = True
+    save_data()
+    await update.message.reply_text("📵 Media will be deleted for non-admins.")
+
+async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    settings["media_off"] = False
+    save_data()
+    await update.message.reply_text("✅ Media allowed for everyone.")
+
+async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    text = update.message.text
+    if text and "@admin" in text.lower():
+        chat = update.effective_chat
+        try:
+            admins = []
+            async for member in chat.get_administrators():
+                if not member.user.is_bot:
+                    admins.append(member.user)
+            if admins:
+                mentions = []
+                for admin in admins:
+                    if admin.username:
+                        mentions.append(f"@{admin.username}")
+                    else:
+                        mentions.append(f'<a href="tg://user?id={admin.id}">Admin</a>')
+                await update.message.reply_text(f"🚨 Admins notified: {' '.join(mentions)}", parse_mode="HTML")
+            else:
+                await update.message.reply_text("No non‑bot admins found.")
+        except:
+            await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
+
+async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    info = force_join_waiting.get(user.id)
+    if not info:
+        await query.edit_message_text("Verification expired. Please rejoin the group or contact an admin.")
+        return
+    chat_id = info["chat_id"]
+    channel = info["channel"]
+    if await is_user_in_channel(user.id, channel, context.bot):
+        await unmute_user(chat_id, user.id, context.bot)
+        await query.edit_message_text("✅ Verification successful! You may now chat in the group.")
+        await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
+        force_join_waiting.pop(user.id, None)
+    else:
+        await query.edit_message_text(f"You have not joined {channel} yet. Please join first, then click the button again.")
+
+async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    save_user(update.effective_user)
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat.type not in ["group", "supergroup"]:
+        return
+    if user.id == context.bot.id:
+        return
+    chat_id = chat.id
+    user_id = user.id
+    settings = get_chat_settings(chat_id)
+    if settings.get("night_mode", False) and not await is_group_admin(update, user_id):
+        await delete_message_safe(update.message)
+        return
+    if not await is_group_admin(update, user_id):
+        channel = settings.get("force_subscribe")
+        if channel:
+            if not await is_user_in_channel(user_id, channel, context.bot):
+                try:
+                    await mute_user(chat_id, user_id, datetime.now() + timedelta(days=365), context.bot)
+                except:
+                    pass
+                await delete_message_safe(update.message)
+                if user_id not in force_join_waiting:
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📢 Subscribe to channel", url=f"https://t.me/{channel[1:]}")],
+                        [InlineKeyboardButton("✅ I subscribed", callback_data="check_subscribe")]
+                    ])
+                    sent = await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} to talk here.\n\nAfter joining, click the button below to verify:", reply_markup=keyboard)
+                    force_join_waiting[user_id] = {"chat_id": chat_id, "channel": channel, "message_id": sent.message_id}
+                return
+    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
+        if update.message.photo or update.message.video or update.message.document or update.message.audio:
+            await delete_message_safe(update.message)
+            return
+    if update.message.sticker:
+        if update.message.sticker.file_id in settings.get("blocked_stickers", []):
+            await delete_message_safe(update.message)
+            return
+        pack_name = update.message.sticker.set_name
+        if pack_name and pack_name in settings.get("banned_sticker_packs", []):
+            await delete_message_safe(update.message)
+            return
+    text = update.message.text or update.message.caption or ""
+    text_lower = text.lower()
+    if any(word in text_lower for word in settings.get("blocked_words", [])):
+        await delete_message_safe(update.message)
+        return
+    if any(word in text_lower.split() for word in settings.get("filters", {}).keys()):
+        await delete_message_safe(update.message)
+        return
+    if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
+        key = (chat_id, user_id)
+        now_ts = datetime.now().timestamp()
+        if key not in msg_tracker:
+            msg_tracker[key] = []
+        msg_tracker[key] = [t for t in msg_tracker[key] if now_ts - t < SPAM_WINDOW]
+        msg_tracker[key].append(now_ts)
+        if len(msg_tracker[key]) > SPAM_MAX_MSGS:
+            until = datetime.now() + timedelta(seconds=MUTE_DURATION)
+            await mute_user(chat_id, user_id, until, context.bot)
+            await context.bot.send_message(chat_id, f"🚫 {user.mention_html()} has been muted for 5 minutes (spam).", parse_mode="HTML")
+            await delete_message_safe(update.message)
+            msg_tracker[key] = []
+            return
+
+async def post_init(app):
+    load_data()
+    asyncio.create_task(auto_night_scheduler(app.bot))
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.post_init = post_init
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("commands", commands_list))
+    app.add_handler(CommandHandler("checkadmin", check_admin))
+    app.add_handler(CommandHandler("nighton", nighton))
+    app.add_handler(CommandHandler("nightoff", nightoff))
+    app.add_handler(CommandHandler("setnight", setnight))
+    app.add_handler(CommandHandler("ban", ban_user))
+    app.add_handler(CommandHandler("kick", kick_user))
+    app.add_handler(CommandHandler("mute", mute_command))
+    app.add_handler(CommandHandler("unmute", unmute_command))
+    app.add_handler(CommandHandler("block", block_word))
+    app.add_handler(CommandHandler("unblock", unblock_word))
+    app.add_handler(CommandHandler("blocksticker", block_sticker))
+    app.add_handler(CommandHandler("unblocksticker", unblock_sticker))
+    app.add_handler(CommandHandler("banstickerpack", ban_sticker_pack))
+    app.add_handler(CommandHandler("unbanstickerpack", unban_sticker_pack))
+    app.add_handler(CommandHandler("pin", pin_message))
+    app.add_handler(CommandHandler("filter", filter_word))
+    app.add_handler(CommandHandler("delfilter", delfilter))
+    app.add_handler(CommandHandler("antispamon", antispam_on))
+    app.add_handler(CommandHandler("antispamoff", antispam_off))
+    app.add_handler(CommandHandler("info", user_info))
+    app.add_handler(CommandHandler("forcesubscribe", forcesubscribe))
+    app.add_handler(CommandHandler("mediaoff", media_off))
+    app.add_handler(CommandHandler("mediaon", media_on))
+    app.add_handler(CallbackQueryHandler(force_subscribe_callback, pattern="check_subscribe"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_mention), group=0)
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, guard_message), group=1)
+    print("🛡️ MRIXDU Protection Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
