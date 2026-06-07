@@ -248,7 +248,7 @@ async def nighton (update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text("🌙 Night mode enabled. Non-admin messages will be deleted.")
 
-async nightoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def nightoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Only group admins can use this command.")
         return
