@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 import pytz
 
-# -------------------- Flask web server for Render --------------------
+# -------------------- Flask web server --------------------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -27,7 +27,7 @@ def run_flask():
 Thread(target=run_flask, daemon=True).start()
 # ---------------------------------------------------------
 
-# -------------------- SQLite Database for username -> user_id --------------------
+# -------------------- SQLite Database --------------------
 DB_FILE = "users.db"
 db_conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 db_cursor = db_conn.cursor()
@@ -41,7 +41,6 @@ db_cursor.execute("""
 db_conn.commit()
 
 def save_user(user):
-    """Store or update user info from a Telegram user object."""
     if not user.username:
         return
     db_cursor.execute("""
@@ -51,13 +50,12 @@ def save_user(user):
     db_conn.commit()
 
 def get_user_by_username(username: str):
-    """Return (user_id, full_name) or None."""
     db_cursor.execute("SELECT user_id, full_name FROM users WHERE username = ?", (username.lower(),))
     return db_cursor.fetchone()
 # ---------------------------------------------------------
 
 # -------------------- Configuration --------------------
-BOT_TOKEN = os.environ.get('SECURITY_BOT_TOKEN', '')
+BOT_TOKEN = os.environ.get('SECURITY_BOT_TOKEN', '8970227707:AAFaDR8qMA5xSJIwgpNcQunQ-_3F_4G6lPs')
 DATA_FILE = "security_bot_data.json"
 
 DEFAULT_NIGHT_ON = "01:00"
@@ -149,7 +147,7 @@ def parse_time_with_am_pm(time_str):
         return None
     return f"{hour:02d}:{minute:02d}"
 
-# -------------------- Auto night mode scheduler (IST) --------------------
+# -------------------- Auto night mode scheduler --------------------
 async def auto_night_scheduler(bot):
     while True:
         now = datetime.now(IST)
@@ -231,6 +229,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Use /start in private chat to see my commands.")
 
+async def commands_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        text = (
+            "📋 **All Commands**\n\n"
+            "• `/ban @username`\n"
+            "• `/kick @username`\n"
+            "• `/mute @username`\n"
+            "• `/unmute @username`\n"
+            "• `/info @username`\n"
+            "• `/nighton` / `/nightoff`\n"
+            "• `/setnight HH:MM HH:MM`\n"
+            "• `/block word` / `/unblock word`\n"
+            "• `/filter word` / `/delfilter word`\n"
+            "• `/blocksticker` / `/unblocksticker`\n"
+            "• `/banstickerpack` / `/unbanstickerpack`\n"
+            "• `/antispamon` / `/antispamoff`\n"
+            "• `/mediaoff` / `/mediaon`\n"
+            "• `/forcesubscribe @channel`\n"
+            "• `/pin`\n"
+            "• `@admin`\n"
+            "• `/checkadmin`"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+
 async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         bot_member = await update.effective_chat.get_member(context.bot.id)
@@ -239,7 +261,7 @@ async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Cannot check admin status: {e}")
 
-async def nighton (update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def nighton(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Only group admins can use this command.")
         return
@@ -367,8 +389,6 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ User @{username} not found in database.")
         return
     user_id, full_name = user_info
-    # Try to get current group status (optional)
-    status_str = "Unknown"
     try:
         member = await update.effective_chat.get_member(user_id)
         status = member.status
@@ -381,7 +401,7 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ChatMember.BANNED: "Banned"
         }.get(status, "Unknown")
     except:
-        pass
+        status_str = "Unknown"
     msg = (
         f"👤 **User Info**\n"
         f"🆔 ID: `{user_id}`\n"
@@ -392,14 +412,83 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
-# (Other existing commands: block_word, unblock_word, block_sticker, unblock_sticker,
-#  ban_sticker_pack, unban_sticker_pack, pin_message, filter_word, delfilter,
-#  antispam_on, antispam_off, forcesubscribe, media_off, media_on, admin_mention,
-#  force_subscribe_callback, guard_message, post_init, main – they remain identical to the earlier full code.
-#  To keep this answer a reasonable length, I'll assume you already have them from the previous final code.
-#  In the actual integration, you should copy them over unchanged.
+# -------------------- Word, Sticker, Filter, Media, Anti-spam, Force subscribe --------------------
+async def block_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /block word1 word2 ...")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    words = [w.lower() for w in context.args if w not in settings["blocked_words"]]
+    settings["blocked_words"].extend(words)
+    save_data()
+    await update.message.reply_text(f"🚫 Blocked words: {', '.join(words)}")
 
-# IMPORTANT: The above handlers are the core ones that use the database. The rest of the handlers
-# (block, filter, sticker pack, forcesubscribe, media, anti‑spam, guard, etc.) are identical to the
-# last full code I provided (the one with 700+ lines). You can copy them from that previous message.
-# I will include them in the final file below in the actual code block.
+async def unblock_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /unblock word1 word2 ...")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    removed = []
+    for w in context.args:
+        wl = w.lower()
+        if wl in settings["blocked_words"]:
+            settings["blocked_words"].remove(wl)
+            removed.append(w)
+    save_data()
+    await update.message.reply_text(f"✅ Unblocked: {', '.join(removed) if removed else 'None'}")
+
+async def block_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker to block it.")
+        return
+    sticker_id = update.message.reply_to_message.sticker.file_id
+    settings = get_chat_settings(update.effective_chat.id)
+    if sticker_id not in settings["blocked_stickers"]:
+        settings["blocked_stickers"].append(sticker_id)
+        save_data()
+        await update.message.reply_text("🚫 Sticker blocked.")
+    else:
+        await update.message.reply_text("Sticker already blocked.")
+
+async def unblock_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker to unblock it.")
+        return
+    sticker_id = update.message.reply_to_message.sticker.file_id
+    settings = get_chat_settings(update.effective_chat.id)
+    if sticker_id in settings["blocked_stickers"]:
+        settings["blocked_stickers"].remove(sticker_id)
+        save_data()
+        await update.message.reply_text("✅ Sticker unblocked.")
+    else:
+        await update.message.reply_text("Sticker not blocked.")
+
+async def ban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker to ban its entire pack.")
+        return
+    sticker = update.message.reply_to_message.sticker
+    pack_name = sticker.set_name
+    if not pack_name:
+        await update.message.reply_text("This sticker does not belong to a pack.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    if pack_name not in settings["banned_sticker_packs"]:
+        settings["banned_sticker_packs"].append(pack_name)
+        save_data()
+        await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be de
