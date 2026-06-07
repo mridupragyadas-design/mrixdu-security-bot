@@ -708,13 +708,14 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if any(word in text_lower for word in settings.get("blocked_words", [])):
         await delete_message_safe(update.message)
         return
+
     # Check filters (auto‑reply)
-for word, reply in settings.get("filters", {}).items():
-    if word in text_lower.split():   # exact word match
-        await update.message.reply_text(reply)
-        # Optionally delete the original message – remove the next line if you don't want deletion
-        await delete_message_safe(update.message)
-        break
+    for word, reply in settings.get("filters", {}).items():
+        if word in text_lower.split():
+            await update.message.reply_text(reply)
+            await delete_message_safe(update.message)
+            break
+
     if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
         key = (chat_id, user_id)
         now_ts = datetime.now().timestamp()
