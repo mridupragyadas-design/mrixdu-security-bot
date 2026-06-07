@@ -532,17 +532,15 @@ async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /filter word")
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /filter word reply_message\nExample: /filter done Hero")
         return
     word = context.args[0].lower()
+    reply = " ".join(context.args[1:])   # everything after the word is the reply
     settings = get_chat_settings(update.effective_chat.id)
-    if word not in settings["filters"]:
-        settings["filters"][word] = "delete"
-        save_data()
-        await update.message.reply_text(f"🔍 Filter added for: {word}")
-    else:
-        await update.message.reply_text("Filter already exists.")
+    settings["filters"][word] = reply   # store the reply string instead of "delete"
+    save_data()
+    await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll reply: '{reply}'")
 
 async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
@@ -710,9 +708,13 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if any(word in text_lower for word in settings.get("blocked_words", [])):
         await delete_message_safe(update.message)
         return
-    if any(word in text_lower.split() for word in settings.get("filters", {}).keys()):
+    # Check filters (auto‑reply)
+for word, reply in settings.get("filters", {}).items():
+    if word in text_lower.split():   # exact word match
+        await update.message.reply_text(reply)
+        # Optionally delete the original message – remove the next line if you don't want deletion
         await delete_message_safe(update.message)
-        return
+        break
     if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
         key = (chat_id, user_id)
         now_ts = datetime.now().timestamp()
