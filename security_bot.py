@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import re
 from datetime import datetime, timedelta
 from threading import Thread
 from flask import Flask
@@ -9,8 +10,9 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
+import pytz
 
-# -------------------- Flask web server --------------------
+# -------------------- Flask web server for Render --------------------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -38,6 +40,9 @@ MUTE_DURATION = 300
 data = {}
 msg_tracker = {}
 force_join_waiting = {}
+user_cache = {}  # {user_id: {"username": str, "first_name": str, "last_name": str}}
+user_id_to_username = {}  # {user_id: username}
+IST = pytz.timezone('Asia/Kolkata')
 
 # -------------------- Helper functions --------------------
 def load_data():
@@ -94,18 +99,42 @@ async def unmute_user(chat_id, user_id, bot):
     perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
     await bot.restrict_chat_member(chat_id, user_id, perms)
 
-async def get_user_by_username(chat, username: str):
+async def update_user_cache(update: Update):
+    """Store user info from every message."""
+    user = update.effective_user
+    if user:
+        user_cache[user.id] = {
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name
+        }
+        if user.username:
+            user_id_to_username[user.username.lower()] = user.id
+
+async def get_user_by_username(chat, username: str, bot):
+    """Find a user by their username using cache and chat member list."""
     username = username.lower().lstrip('@')
-    try:
-        member = await chat.get_member(username)
-        return member.user
-    except:
+    
+    # Check cache first
+    if username in user_id_to_username:
+        uid = user_id_to_username[username]
         try:
-            async for member in chat.get_members():
-                if member.user.username and member.user.username.lower() == username:
-                    return member.user
+            member = await chat.get_member(uid)
+            return member.user
         except:
             pass
+    
+    # Search chat members (limit to 200 for performance)
+    try:
+        async for member in chat.get_members():
+            if member.user.username and member.user.username.lower() == username:
+                user_id_to_username[username] = member.user.id
+                return member.user
+            if len(user_id_to_username) > 200:
+                break
+    except:
+        pass
+    
     return None
 
 async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -114,11 +143,11 @@ async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = update.message.reply_to_message.from_user
     elif context.args:
         username = context.args[0].lstrip('@')
-        user = await get_user_by_username(update.effective_chat, username)
+        user = await get_user_by_username(update.effective_chat, username, context.bot)
         if user:
             target = user
         else:
-            await update.message.reply_text(f"❌ Could not find user @{username}.\nMake sure the user is still in the group and that I am an admin.")
+            await update.message.reply_text(f"❌ Could not find user @{username}.\nMake sure the user is in the group and that I am an admin, or use reply.")
             return None
     return target
 
@@ -128,10 +157,26 @@ async def delete_message_safe(message):
     except:
         pass
 
-# -------------------- Auto night mode scheduler --------------------
+def parse_time_with_am_pm(time_str):
+    """Parse time string in formats: HH:MM, HH:MM AM, HH:MM PM."""
+    time_str = time_str.strip().upper()
+    match = re.match(r'(\d{1,2}):(\d{2})(?:\s*([AP]M))?', time_str)
+    if not match:
+        return None
+    hour, minute, am_pm = int(match.group(1)), int(match.group(2)), match.group(3)
+    if am_pm:
+        if am_pm == 'PM' and hour != 12:
+            hour += 12
+        elif am_pm == 'AM' and hour == 12:
+            hour = 0
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+# -------------------- Auto night mode scheduler (IST) --------------------
 async def auto_night_scheduler(bot):
     while True:
-        now = datetime.now()
+        now = datetime.now(IST)
         current_time = now.strftime("%H:%M")
         for chat_id_str, settings in list(data.items()):
             chat_id = int(chat_id_str)
@@ -189,20 +234,22 @@ async def setnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Only group admins can use this command.")
         return
     if len(context.args) != 2:
-        await update.message.reply_text("Usage: /setnight 01:00 07:00")
+        await update.message.reply_text("Usage: /setnight 01:00 07:00 or /setnight 1:00 PM 7:00 AM\nExample: `/setnight 01:00 07:00` (24h) or `/setnight 10:00 PM 6:00 AM` (12h with AM/PM)", parse_mode="Markdown")
         return
-    on_time, off_time = context.args[0], context.args[1]
-    try:
-        datetime.strptime(on_time, "%H:%M")
-        datetime.strptime(off_time, "%H:%M")
-    except:
-        await update.message.reply_text("Invalid time format. Use HH:MM (24h).")
+    
+    # Parse both times
+    on_24h = parse_time_with_am_pm(context.args[0])
+    off_24h = parse_time_with_am_pm(context.args[1])
+    
+    if not on_24h or not off_24h:
+        await update.message.reply_text("Invalid time format. Use 24h (HH:MM) or 12h with AM/PM (e.g., 1:00 PM).")
         return
+    
     settings = get_chat_settings(update.effective_chat.id)
-    settings["night_on"] = on_time
-    settings["night_off"] = off_time
+    settings["night_on"] = on_24h
+    settings["night_off"] = off_24h
     save_data()
-    await update.message.reply_text(f"✅ Auto night mode set: ON {on_time}, OFF {off_time}.")
+    await update.message.reply_text(f"✅ Auto night mode set: ON {on_24h} IST, OFF {off_24h} IST.")
 
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
@@ -454,15 +501,16 @@ async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text("✅ Media allowed for everyone.")
 
-# -------------------- @admin mention (works in supergroups) --------------------
+# -------------------- @admin mention (works in normal groups by notifying creator) --------------------
 async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     text = update.message.text
     if text and "@admin" in text.lower():
         chat = update.effective_chat
-        admins = []
         try:
+            # Try to get admin list (supergroups only)
+            admins = []
             async for member in chat.get_administrators():
                 if not member.user.is_bot:
                     admins.append(member.user)
@@ -474,10 +522,23 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     else:
                         mentions.append(f'<a href="tg://user?id={admin.id}">Admin</a>')
                 await update.message.reply_text(f"🚨 Admins notified: {' '.join(mentions)}", parse_mode="HTML")
-            else:
-                await update.message.reply_text("No admins found.")
-        except Exception as e:
-            await update.message.reply_text("This group is not a supergroup. Please upgrade the group to a supergroup for @admin to work.")
+                return
+        except:
+            pass
+        # Fallback for normal groups: notify the group creator (first admin)
+        try:
+            creator = await chat.get_administrators()
+            if creator:
+                creator = creator[0].user
+                if creator.username:
+                    mention = f"@{creator.username}"
+                else:
+                    mention = f'<a href="tg://user?id={creator.id}">Group Creator</a>'
+                await update.message.reply_text(f"🚨 Group creator notified: {mention}", parse_mode="HTML")
+                return
+        except:
+            pass
+        await update.message.reply_text("⚠️ Could not fetch any admin. Please ensure the bot is admin and the group is upgraded to a supergroup for full @admin support.")
 
 # -------------------- Force subscribe callback --------------------
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -502,6 +563,7 @@ async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
+    await update_user_cache(update)
     chat = update.effective_chat
     user = update.effective_user
     if chat.type not in ["group", "supergroup"]:
@@ -579,6 +641,21 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg_tracker[key] = []
             return
 
+	# test
+	async def test_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"User cache size: {len(user_id_to_username)}")
+
+async def test_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /testresolve @username")
+        return
+    username = context.args[0].lstrip('@')
+    user = await get_user_by_username(update.effective_chat, username, context.bot)
+    if user:
+        await update.message.reply_text(f"Found: {user.id} @{user.username}")
+    else:
+        await update.message.reply_text("Not found")
+
 # -------------------- Main --------------------
 async def post_init(app):
     load_data()
@@ -609,6 +686,8 @@ def main():
     app.add_handler(CommandHandler("forcesubscribe", forcesubscribe))
     app.add_handler(CommandHandler("mediaoff", media_off))
     app.add_handler(CommandHandler("mediaon", media_on))
+   app.add_handler(CommandHandler("testcache", test_cache))
+   app.add_handler(CommandHandler("testresolve", test_resolve))
 
     app.add_handler(CallbackQueryHandler(force_subscribe_callback, pattern="check_subscribe"))
 
