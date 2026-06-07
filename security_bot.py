@@ -491,8 +491,7 @@ async def ban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pack_name not in settings["banned_sticker_packs"]:
         settings["banned_sticker_packs"].append(pack_name)
         save_data()
-        await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be de
-leted.", parse_mode="Markdown")
+        await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be deleted.", parse_mode="Markdown")
     else:
         await update.message.reply_text("This sticker pack is already banned.")
 
