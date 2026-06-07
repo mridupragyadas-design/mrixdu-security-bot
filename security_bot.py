@@ -239,7 +239,7 @@ async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Cannot check admin status: {e}")
 
-async nighton(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def nighton (update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Only group admins can use this command.")
         return
