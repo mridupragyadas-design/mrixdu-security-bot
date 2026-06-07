@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 import pytz
 
-# -------------------- Flask web server for Render --------------------
+# -------------------- Flask web server --------------------
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -40,8 +40,6 @@ MUTE_DURATION = 300
 data = {}
 msg_tracker = {}
 force_join_waiting = {}
-user_cache = {}  # {user_id: {"username": str, "first_name": str, "last_name": str}}
-user_id_to_username = {}  # {user_id: username}
 IST = pytz.timezone('Asia/Kolkata')
 
 # -------------------- Helper functions --------------------
@@ -66,6 +64,7 @@ def get_chat_settings(chat_id):
             "night_off": DEFAULT_NIGHT_OFF,
             "blocked_words": [],
             "blocked_stickers": [],
+            "banned_sticker_packs": [],
             "filters": {},
             "anti_spam": False,
             "force_subscribe": None,
@@ -99,55 +98,18 @@ async def unmute_user(chat_id, user_id, bot):
     perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
     await bot.restrict_chat_member(chat_id, user_id, perms)
 
-async def update_user_cache(update: Update):
-    """Store user info from every message."""
-    user = update.effective_user
-    if user:
-        user_cache[user.id] = {
-            "username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name
-        }
-        if user.username:
-            user_id_to_username[user.username.lower()] = user.id
-
-async def get_user_by_username(chat, username: str, bot):
-    """Find a user by their username using cache and chat member list."""
-    username = username.lower().lstrip('@')
-    
-    # Check cache first
-    if username in user_id_to_username:
-        uid = user_id_to_username[username]
-        try:
-            member = await chat.get_member(uid)
-            return member.user
-        except:
-            pass
-    
-    # Search chat members (limit to 200 for performance)
-    try:
-        async for member in chat.get_members():
-            if member.user.username and member.user.username.lower() == username:
-                user_id_to_username[username] = member.user.id
-                return member.user
-            if len(user_id_to_username) > 200:
-                break
-    except:
-        pass
-    
-    return None
-
 async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Extract user from reply or @username (reliable method)."""
     target = None
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     elif context.args:
-        username = context.args[0].lstrip('@')
-        user = await get_user_by_username(update.effective_chat, username, context.bot)
-        if user:
-            target = user
-        else:
-            await update.message.reply_text(f"❌ Could not find user @{username}.\nMake sure the user is in the group and that I am an admin, or use reply.")
+        user_input = context.args[0].lstrip('@')
+        try:
+            member = await update.effective_chat.get_member(user_input)
+            target = member.user
+        except Exception as e:
+            await update.message.reply_text(f"❌ Could not find user: {user_input}\nError: {e}\nMake sure the user is in the group and I am admin.")
             return None
     return target
 
@@ -158,7 +120,6 @@ async def delete_message_safe(message):
         pass
 
 def parse_time_with_am_pm(time_str):
-    """Parse time string in formats: HH:MM, HH:MM AM, HH:MM PM."""
     time_str = time_str.strip().upper()
     match = re.match(r'(\d{1,2}):(\d{2})(?:\s*([AP]M))?', time_str)
     if not match:
@@ -203,6 +164,39 @@ async def auto_night_scheduler(bot):
         await asyncio.sleep(60)
 
 # -------------------- Command handlers --------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        help_text = (
+            "👋 HEYY I'M MRIXDU SECURITY BOT\n\n"
+            "📜 **My Commands (Group Admins only)**\n"
+            "• `/kick @username` – Kick a user\n"
+            "• `/ban @username` – Ban a user\n"
+            "• `/mute @username` – Mute a user\n"
+            "• `/unmute @username` – Unmute a user\n"
+            "• `/info @username` – Show user info\n"
+            "• `/nighton` – Enable night mode (delete all non-admin messages)\n"
+            "• `/nightoff` – Disable night mode\n"
+            "• `/setnight HH:MM HH:MM` – Set auto night schedule (24h or 12h AM/PM)\n"
+            "• `/block word1 word2` – Block words\n"
+            "• `/unblock word1 word2` – Unblock words\n"
+            "• `/filter word` – Delete messages containing exact word\n"
+            "• `/delfilter word` – Remove filter\n"
+            "• `/blocksticker` (reply) – Block a sticker\n"
+            "• `/unblocksticker` (reply) – Unblock a sticker\n"
+            "• `/banstickerpack` (reply) – Ban entire sticker pack\n"
+            "• `/unbanstickerpack` (reply) – Unban sticker pack\n"
+            "• `/antispamon` / `/antispamoff` – Toggle anti-spam\n"
+            "• `/mediaoff` / `/mediaon` – Block/allow media\n"
+            "• `/forcesubscribe @channel` – Require joining a channel\n"
+            "• `/pin` (reply) – Pin a message\n"
+            "• `@admin` – Notify group admins\n"
+            "• `/checkadmin` – Verify bot's admin status\n\n"
+            "➡️ Add me to a group as **admin** and use these commands."
+        )
+        await update.message.reply_text(help_text, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("Use /start in private chat to see my commands.")
+
 async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         bot_member = await update.effective_chat.get_member(context.bot.id)
@@ -236,15 +230,14 @@ async def setnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("Usage: /setnight 01:00 07:00 or /setnight 1:00 PM 7:00 AM\nExample: `/setnight 01:00 07:00` (24h) or `/setnight 10:00 PM 6:00 AM` (12h with AM/PM)", parse_mode="Markdown")
         return
-    
-    # Parse both times
+
     on_24h = parse_time_with_am_pm(context.args[0])
     off_24h = parse_time_with_am_pm(context.args[1])
-    
+
     if not on_24h or not off_24h:
         await update.message.reply_text("Invalid time format. Use 24h (HH:MM) or 12h with AM/PM (e.g., 1:00 PM).")
         return
-    
+
     settings = get_chat_settings(update.effective_chat.id)
     settings["night_on"] = on_24h
     settings["night_off"] = off_24h
@@ -368,6 +361,46 @@ async def unblock_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Sticker not blocked.")
 
+async def ban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker to ban its entire pack.")
+        return
+    sticker = update.message.reply_to_message.sticker
+    pack_name = sticker.set_name
+    if not pack_name:
+        await update.message.reply_text("This sticker does not belong to a pack (or is a custom emoji).")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    if pack_name not in settings["banned_sticker_packs"]:
+        settings["banned_sticker_packs"].append(pack_name)
+        save_data()
+        await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be deleted.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("This sticker pack is already banned.")
+
+async def unban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
+        await update.message.reply_text("Reply to a sticker from the banned pack to unban it.")
+        return
+    sticker = update.message.reply_to_message.sticker
+    pack_name = sticker.set_name
+    if not pack_name:
+        await update.message.reply_text("This sticker does not belong to a pack.")
+        return
+    settings = get_chat_settings(update.effective_chat.id)
+    if pack_name in settings["banned_sticker_packs"]:
+        settings["banned_sticker_packs"].remove(pack_name)
+        save_data()
+        await update.message.reply_text(f"✅ Sticker pack `{pack_name}` unbanned. Stickers from this pack are now allowed.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("This sticker pack was not banned.")
+
 async def pin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -431,271 +464,4 @@ async def antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text("✅ Anti-spam disabled.")
 
-async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    target = await get_target_user(update, context)
-    if not target:
-        return
-    try:
-        member = await update.effective_chat.get_member(target.id)
-        status = member.status
-        status_str = {
-            ChatMember.CREATOR: "Creator",
-            ChatMember.ADMINISTRATOR: "Administrator",
-            ChatMember.MEMBER: "Member",
-            ChatMember.RESTRICTED: "Restricted",
-            ChatMember.LEFT: "Left",
-            ChatMember.BANNED: "Banned"
-        }.get(status, "Unknown")
-    except Exception as e:
-        status_str = f"Error: {e}"
-    msg = (
-        f"👤 **User Info**\n"
-        f"🆔 ID: `{target.id}`\n"
-        f"📛 Name: {target.first_name or ''} {target.last_name or ''}\n"
-        f"👤 Username: @{target.username or 'N/A'}\n"
-        f"🔗 [User link](tg://user?id={target.id})\n"
-        f"📌 Status: {status_str}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
-
-async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /forcesubscribe @channelusername\nTo remove: /forcesubscribe off")
-        return
-    channel = context.args[0]
-    chat_id = update.effective_chat.id
-    settings = get_chat_settings(chat_id)
-    if channel.lower() == "off":
-        settings["force_subscribe"] = None
-        save_data()
-        await update.message.reply_text("Force subscribe removed.")
-        return
-    if not channel.startswith("@"):
-        await update.message.reply_text("Channel must start with @")
-        return
-    settings["force_subscribe"] = channel
-    save_data()
-    await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
-
-async def media_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["media_off"] = True
-    save_data()
-    await update.message.reply_text("📵 Media will be deleted for non-admins.")
-
-async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["media_off"] = False
-    save_data()
-    await update.message.reply_text("✅ Media allowed for everyone.")
-
-# -------------------- @admin mention (works in normal groups by notifying creator) --------------------
-async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    text = update.message.text
-    if text and "@admin" in text.lower():
-        chat = update.effective_chat
-        try:
-            # Try to get admin list (supergroups only)
-            admins = []
-            async for member in chat.get_administrators():
-                if not member.user.is_bot:
-                    admins.append(member.user)
-            if admins:
-                mentions = []
-                for admin in admins:
-                    if admin.username:
-                        mentions.append(f"@{admin.username}")
-                    else:
-                        mentions.append(f'<a href="tg://user?id={admin.id}">Admin</a>')
-                await update.message.reply_text(f"🚨 Admins notified: {' '.join(mentions)}", parse_mode="HTML")
-                return
-        except:
-            pass
-        # Fallback for normal groups: notify the group creator (first admin)
-        try:
-            creator = await chat.get_administrators()
-            if creator:
-                creator = creator[0].user
-                if creator.username:
-                    mention = f"@{creator.username}"
-                else:
-                    mention = f'<a href="tg://user?id={creator.id}">Group Creator</a>'
-                await update.message.reply_text(f"🚨 Group creator notified: {mention}", parse_mode="HTML")
-                return
-        except:
-            pass
-        await update.message.reply_text("⚠️ Could not fetch any admin. Please ensure the bot is admin and the group is upgraded to a supergroup for full @admin support.")
-
-# -------------------- Force subscribe callback --------------------
-async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    info = force_join_waiting.get(user.id)
-    if not info:
-        await query.edit_message_text("Verification expired. Please rejoin the group or contact an admin.")
-        return
-    chat_id = info["chat_id"]
-    channel = info["channel"]
-    if await is_user_in_channel(user.id, channel, context.bot):
-        await unmute_user(chat_id, user.id, context.bot)
-        await query.edit_message_text("✅ Verification successful! You may now chat in the group.")
-        await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
-        force_join_waiting.pop(user.id, None)
-    else:
-        await query.edit_message_text(f"You have not joined {channel} yet. Please join first, then click the button again.")
-
-# -------------------- Message guard --------------------
-async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    await update_user_cache(update)
-    chat = update.effective_chat
-    user = update.effective_user
-    if chat.type not in ["group", "supergroup"]:
-        return
-    if user.id == context.bot.id:
-        return
-
-    chat_id = chat.id
-    user_id = user.id
-    settings = get_chat_settings(chat_id)
-
-    # Night mode
-    if settings.get("night_mode", False) and not await is_group_admin(update, user_id):
-        await delete_message_safe(update.message)
-        return
-
-    # Force subscribe (for non-admins)
-    if not await is_group_admin(update, user_id):
-        channel = settings.get("force_subscribe")
-        if channel:
-            if not await is_user_in_channel(user_id, channel, context.bot):
-                try:
-                    await mute_user(chat_id, user_id, datetime.now() + timedelta(days=365), context.bot)
-                except:
-                    pass
-                await delete_message_safe(update.message)
-                if user_id not in force_join_waiting:
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📢 Subscribe to channel", url=f"https://t.me/{channel[1:]}")],
-                        [InlineKeyboardButton("✅ I subscribed", callback_data="check_subscribe")]
-                    ])
-                    sent = await context.bot.send_message(
-                        chat_id,
-                        f"@{user.username or user.first_name}, you must join {channel} to talk here.\n\nAfter joining, click the button below to verify:",
-                        reply_markup=keyboard
-                    )
-                    force_join_waiting[user_id] = {"chat_id": chat_id, "channel": channel, "message_id": sent.message_id}
-                return
-
-    # Media off
-    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
-        if update.message.photo or update.message.video or update.message.document or update.message.audio:
-            await delete_message_safe(update.message)
-            return
-
-    # Sticker block
-    if update.message.sticker:
-        if update.message.sticker.file_id in settings.get("blocked_stickers", []):
-            await delete_message_safe(update.message)
-            return
-
-    # Word block & filters
-    text = update.message.text or update.message.caption or ""
-    text_lower = text.lower()
-    if any(word in text_lower for word in settings.get("blocked_words", [])):
-        await delete_message_safe(update.message)
-        return
-    if any(word in text_lower.split() for word in settings.get("filters", {}).keys()):
-        await delete_message_safe(update.message)
-        return
-
-    # Anti-spam
-    if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
-        key = (chat_id, user_id)
-        now_ts = datetime.now().timestamp()
-        if key not in msg_tracker:
-            msg_tracker[key] = []
-        msg_tracker[key] = [t for t in msg_tracker[key] if now_ts - t < SPAM_WINDOW]
-        msg_tracker[key].append(now_ts)
-        if len(msg_tracker[key]) > SPAM_MAX_MSGS:
-            until = datetime.now() + timedelta(seconds=MUTE_DURATION)
-            await mute_user(chat_id, user_id, until, context.bot)
-            await context.bot.send_message(chat_id, f"🚫 {user.mention_html()} has been muted for 5 minutes (spam).", parse_mode="HTML")
-            await delete_message_safe(update.message)
-            msg_tracker[key] = []
-            return
-
-	# test
-	async def test_cache(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"User cache size: {len(user_id_to_username)}")
-
-async def test_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /testresolve @username")
-        return
-    username = context.args[0].lstrip('@')
-    user = await get_user_by_username(update.effective_chat, username, context.bot)
-    if user:
-        await update.message.reply_text(f"Found: {user.id} @{user.username}")
-    else:
-        await update.message.reply_text("Not found")
-
-# -------------------- Main --------------------
-async def post_init(app):
-    load_data()
-    asyncio.create_task(auto_night_scheduler(app.bot))
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.post_init = post_init
-
-    app.add_handler(CommandHandler("checkadmin", check_admin))
-    app.add_handler(CommandHandler("nighton", nighton))
-    app.add_handler(CommandHandler("nightoff", nightoff))
-    app.add_handler(CommandHandler("setnight", setnight))
-    app.add_handler(CommandHandler("ban", ban_user))
-    app.add_handler(CommandHandler("kick", kick_user))
-    app.add_handler(CommandHandler("mute", mute_command))
-    app.add_handler(CommandHandler("unmute", unmute_command))
-    app.add_handler(CommandHandler("block", block_word))
-    app.add_handler(CommandHandler("unblock", unblock_word))
-    app.add_handler(CommandHandler("blocksticker", block_sticker))
-    app.add_handler(CommandHandler("unblocksticker", unblock_sticker))
-    app.add_handler(CommandHandler("pin", pin_message))
-    app.add_handler(CommandHandler("filter", filter_word))
-    app.add_handler(CommandHandler("delfilter", delfilter))
-    app.add_handler(CommandHandler("antispamon", antispam_on))
-    app.add_handler(CommandHandler("antispamoff", antispam_off))
-    app.add_handler(CommandHandler("info", user_info))
-    app.add_handler(CommandHandler("forcesubscribe", forcesubscribe))
-    app.add_handler(CommandHandler("mediaoff", media_off))
-    app.add_handler(CommandHandler("mediaon", media_on))
-   app.add_handler(CommandHandler("testcache", test_cache))
-   app.add_handler(CommandHandler("testresolve", test_resolve))
-
-    app.add_handler(CallbackQueryHandler(force_subscribe_callback, pattern="check_subscribe"))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_mention), group=0)
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, guard_message), group=1)
-
-    print("🛡️ Mrixdu Security++ Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+async def user_info(update: Upd
