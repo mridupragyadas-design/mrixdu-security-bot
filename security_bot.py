@@ -98,18 +98,37 @@ async def unmute_user(chat_id, user_id, bot):
     perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
     await bot.restrict_chat_member(chat_id, user_id, perms)
 
+# Cache: username_lower -> user_id
+username_cache = {}
+
 async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = None
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     elif context.args:
-        user_input = context.args[0].lstrip('@')
-        try:
-            # This is the correct way – works when bot is admin and user is in group
-            member = await update.effective_chat.get_member(user_input)
-            target = member.user
-        except Exception as e:
-            await update.message.reply_text(f"❌ Could not find user: @{user_input}\nError: {e}\nMake sure I am an admin and the user is in the group.")
+        username = context.args[0].lstrip('@').lower()
+        # Check cache first
+        if username in username_cache:
+            uid = username_cache[username]
+            try:
+                member = await update.effective_chat.get_member(uid)
+                target = member.user
+            except:
+                pass
+        # If not in cache, search group members (first 500)
+        if not target:
+            try:
+                async for member in update.effective_chat.get_members():
+                    if member.user.username and member.user.username.lower() == username:
+                        target = member.user
+                        username_cache[username] = member.user.id
+                        break
+                    # Optional: limit search to 500 to avoid long scans
+                    # if some counter > 500: break
+            except Exception as e:
+                await update.message.reply_text(f"Error searching members: {e}")
+        if not target:
+            await update.message.reply_text(f"❌ Could not find user @{context.args[0]}.\nMake sure I am an admin and the user is in the group.")
             return None
     return target
 
@@ -566,9 +585,10 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"🚨 Admins notified: {' '.join(mentions)}", parse_mode="HTML")
                 return
         except:
+            # Not a supergroup – cannot fetch admins
             pass
-        # If not a supergroup, fallback to a clear message
-        await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup or use /adminlist to see admins.", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup or create a new supergroup and add me as admin.", parse_mode="Markdown")
+
 # -------------------- Force subscribe callback --------------------
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
