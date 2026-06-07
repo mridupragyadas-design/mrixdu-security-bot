@@ -99,17 +99,17 @@ async def unmute_user(chat_id, user_id, bot):
     await bot.restrict_chat_member(chat_id, user_id, perms)
 
 async def get_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Extract user from reply or @username (reliable method)."""
     target = None
     if update.message.reply_to_message:
         target = update.message.reply_to_message.from_user
     elif context.args:
         user_input = context.args[0].lstrip('@')
         try:
+            # This is the correct way – works when bot is admin and user is in group
             member = await update.effective_chat.get_member(user_input)
             target = member.user
         except Exception as e:
-            await update.message.reply_text(f"❌ Could not find user: {user_input}\nError: {e}\nMake sure the user is in the group and I am admin.")
+            await update.message.reply_text(f"❌ Could not find user: @{user_input}\nError: {e}\nMake sure I am an admin and the user is in the group.")
             return None
     return target
 
@@ -557,20 +557,8 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
         except:
             pass
-        try:
-            creator = await chat.get_administrators()
-            if creator:
-                creator = creator[0].user
-                if creator.username:
-                    mention = f"@{creator.username}"
-                else:
-                    mention = f'<a href="tg://user?id={creator.id}">Group Creator</a>'
-                await update.message.reply_text(f"🚨 Group creator notified: {mention}", parse_mode="HTML")
-                return
-        except:
-            pass
-        await update.message.reply_text("⚠️ Could not fetch any admin. Ensure bot is admin and group is upgraded to supergroup.")
-
+        # If not a supergroup, fallback to a clear message
+        await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup or use /adminlist to see admins.", parse_mode="Markdown")
 # -------------------- Force subscribe callback --------------------
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
