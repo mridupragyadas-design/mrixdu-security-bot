@@ -555,20 +555,33 @@ async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Admins only.")
         return
 
-    # Check filters (auto‑reply, supports photos)
-for word, stored in settings.get("filters", {}).items():
-    if word in text_lower.split():
-        # If stored is a photo file_id (starts with AgAC/BQAC/CAAC), send as photo
-        if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
-            try:
-                await update.message.reply_photo(stored)
-            except:
-                await update.message.reply_text("Error sending photo.")
-        else:
-            await update.message.reply_text(stored)
-        await delete_message_safe(update.message)
-        break
+    # Check if the command is a reply to a photo
+    photo_file_id = None
+    if update.message.reply_to_message and update.message.reply_to_message.photo:
+        photo_file_id = update.message.reply_to_message.photo[-1].file_id
 
+    if not context.args:
+        await update.message.reply_text("Usage: /filter word [reply to a photo] or /filter word reply_text")
+        return
+
+    word = context.args[0].lower()
+    settings = get_chat_settings(update.effective_chat.id)
+
+    if photo_file_id:
+        # Store the photo file_id as the filter reply
+        settings["filters"][word] = photo_file_id
+        save_data()
+        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll send that photo.")
+    else:
+        # Store text reply (everything after the word)
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /filter word reply_text\nExample: /filter done Hero")
+            return
+        reply = " ".join(context.args[1:])
+        settings["filters"][word] = reply
+        save_data()
+        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll reply: '{reply}'")
+        
 async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
