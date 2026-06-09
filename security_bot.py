@@ -380,15 +380,36 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /info @username")
+
+    target_user = None
+
+    # Case 1: reply to a message
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    # Case 2: /info @username
+    elif context.args:
+        username = context.args[0].lstrip('@')
+        user_data = get_user_by_username(username)
+        if user_data:
+            user_id, full_name = user_data
+            try:
+                member = await update.effective_chat.get_member(user_id)
+                target_user = member.user
+            except:
+                await update.message.reply_text(f"User @{username} found in DB but not in group.")
+                return
+        else:
+            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
+            return
+    else:
+        await update.message.reply_text("Usage: /info @username or reply to a user's message with /info")
         return
-    username = context.args[0].lstrip('@')
-    user_info = get_user_by_username(username)
-    if not user_info:
-        await update.message.reply_text(f"❌ User @{username} not found in database.")
-        return
-    user_id, full_name = user_info
+
+    # Now target_user is a User object
+    user_id = target_user.id
+    full_name = target_user.full_name
+    username = target_user.username or "NoUsername"
+
     try:
         member = await update.effective_chat.get_member(user_id)
         status = member.status
@@ -402,6 +423,7 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }.get(status, "Unknown")
     except:
         status_str = "Unknown"
+
     msg = (
         f"👤 **User Info**\n"
         f"🆔 ID: `{user_id}`\n"
