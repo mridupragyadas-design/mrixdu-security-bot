@@ -357,6 +357,41 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Unbanned user ID {target_id}")
     except Exception as e:
         await update.message.reply_text(f"Failed to unban: {e}")
+
+async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+
+    target_user = None
+
+    # Case 1: reply to a message
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    # Case 2: /kick @username
+    elif context.args:
+        username = context.args[0].lstrip('@')
+        user_info = get_user_by_username(username)
+        if not user_info:
+            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
+            return
+        user_id = user_info[0]
+        try:
+            member = await update.effective_chat.get_member(user_id)
+            target_user = member.user
+        except:
+            await update.message.reply_text(f"User @{username} found in DB but not in group.")
+            return
+    else:
+        await update.message.reply_text("Usage: /kick @username or reply to a user's message with /kick")
+        return
+
+    try:
+        await update.effective_chat.ban_member(target_user.id)
+        await update.effective_chat.unban_member(target_user.id)
+        await update.message.reply_text(f"✅ Kicked {target_user.first_name}")
+    except Exception as e:
+        await update.message.reply_text(f"Failed to kick: {e}")
         
 async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
