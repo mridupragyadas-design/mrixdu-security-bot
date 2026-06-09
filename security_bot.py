@@ -616,28 +616,30 @@ async def antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text("✅ Anti-spam disabled.")
 
-async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
+async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    info = force_join_waiting.get(user.id)
+    if not info:
+        await query.edit_message_text("Verification expired. Please rejoin the group or contact an admin.")
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /forcesubscribe @channelusername\nTo remove: /forcesubscribe off")
-        return
-    channel = context.args[0]
-    chat_id = update.effective_chat.id
-    settings = get_chat_settings(chat_id)
-    if channel.lower() == "off":
-        settings["force_subscribe"] = None
-        save_data()
-        await update.message.reply_text("Force subscribe removed.")
-        return
-    if not channel.startswith("@"):
-        await update.message.reply_text("Channel must start with @")
-        return
-    settings["force_subscribe"] = channel
-    save_data()
-    await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
-
+    chat_id = info["chat_id"]
+    channel = info["channel"]
+    if await is_user_in_channel(user.id, channel, context.bot):
+        await unmute_user(chat_id, user.id, context.bot)
+        await query.edit_message_text("✅ Verification successful! You may now chat in the group.")
+        await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
+        force_join_waiting.pop(user.id, None)
+    else:
+        # Do NOT remove the button – just alert the user
+        await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
+        # Optional: send a temporary visible message (doesn't affect the button)
+        try:
+            await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} before clicking the button.", disable_notification=True)
+        except:
+            pass
+            
 async def media_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -716,6 +718,7 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_message_safe(update.message)
         return
 
+    # Force subscribe (mute non‑subscribed users)
     if not await is_group_admin(update, user_id):
         channel = settings.get("force_subscribe")
         if channel:
@@ -733,6 +736,18 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent = await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} to talk here.\n\nAfter joining, click the button below to verify:", reply_markup=keyboard)
                     force_join_waiting[user_id] = {"chat_id": chat_id, "channel": channel, "message_id": sent.message_id}
                 return
+
+    # Auto-unmute if user has joined the channel (no button click needed)
+    if not await is_group_admin(update, user_id):
+        channel = settings.get("force_subscribe")
+        if channel and await is_user_in_channel(user_id, channel, context.bot):
+            try:
+                member = await chat.get_member(user_id)
+                if member.status == ChatMember.RESTRICTED and not member.can_send_messages:
+                    await unmute_user(chat_id, user_id, context.bot)
+                    await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has joined {channel} and has been unmuted automatically.")
+            except:
+                pass
 
     if settings.get("media_off", False) and not await is_group_admin(update, user_id):
         if update.message.photo or update.message.video or update.message.document or update.message.audio:
