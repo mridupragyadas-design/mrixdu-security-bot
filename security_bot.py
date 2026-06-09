@@ -489,7 +489,7 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📛 Name: {full_name}\n"
         f"👤 Username: @{username}\n"
         f"🔗 [User link](tg://user?id={user_id})\n"
-        f"📌 Status in group: {status_str}"
+        f"📌 Status in group: {status_str}\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
     # -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
