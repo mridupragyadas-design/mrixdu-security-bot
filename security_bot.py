@@ -741,10 +741,9 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_message_safe(update.message)
         return
 
-    # Check filters (auto‑reply, supports photos)  ← this comment is indented 4 spaces
+    # Check filters (auto‑reply, supports photos) – correctly indented
     for word, stored in settings.get("filters", {}).items():
         if word in text_lower.split():
-            # If stored is a photo file_id, send as photo
             if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
                 try:
                     await update.message.reply_photo(stored)
