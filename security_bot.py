@@ -741,7 +741,7 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_message_safe(update.message)
         return
 
-    # Check filters (auto‑reply, supports photos) – correctly indented
+    # Check filters (auto‑reply, supports photos)
     for word, stored in settings.get("filters", {}).items():
         if word in text_lower.split():
             if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
