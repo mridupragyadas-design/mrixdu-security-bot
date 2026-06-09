@@ -464,21 +464,30 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /info @username or reply to a user's message with /info")
         return
 
-    # Try to get group status, but don't fail if we can't
+    if not target_user:
+        await update.message.reply_text("Could not identify target user.")
+        return
+
+    # Now get user details from target_user
+    user_id = target_user.id
+    full_name = target_user.full_name
+    username = target_user.username or "NoUsername"
+
+    # Get group status (works for both reply and @username)
     status_str = "Unknown"
     try:
-        member = await update.effective_chat.get_member(target_user.id)
+        member = await update.effective_chat.get_member(user_id)
         status = member.status
         status_str = {
-            "creator": "Creator",
-            "administrator": "Administrator",
-            "member": "Member",
-            "restricted": "Restricted",
-            "left": "Left",
-            "banned": "Banned"
-        }.get(str(status).lower(), str(status))
-    except Exception as e:
-        status_str = f"Could not fetch (bot admin? {e})"
+            ChatMember.CREATOR: "Creator",
+            ChatMember.ADMINISTRATOR: "Administrator",
+            ChatMember.MEMBER: "Member",
+            ChatMember.RESTRICTED: "Restricted",
+            ChatMember.LEFT: "Left",
+            ChatMember.BANNED: "Banned"
+        }.get(status, "Unknown")
+    except:
+        pass
 
     msg = (
         f"👤 **User Info**\n"
@@ -486,7 +495,7 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📛 Name: {full_name}\n"
         f"👤 Username: @{username}\n"
         f"🔗 [User link](tg://user?id={user_id})\n"
-        f"📌 Status in group: {status_str}\n"
+        f"📌 Status in group: {status_str}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
     # -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
