@@ -468,24 +468,32 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Could not identify target user.")
         return
 
-    # Now get user details from target_user
     user_id = target_user.id
     full_name = target_user.full_name
     username = target_user.username or "NoUsername"
 
-    # Get group status (works for both reply and @username)
-    status_str = "Unknown"
+    # Get status by checking admin list first (reliable)
+    status_str = "Member"
     try:
-        member = await update.effective_chat.get_member(user_id)
-        status = member.status
-        status_str = {
-            ChatMember.CREATOR: "Creator",
-            ChatMember.ADMINISTRATOR: "Administrator",
-            ChatMember.MEMBER: "Member",
-            ChatMember.RESTRICTED: "Restricted",
-            ChatMember.LEFT: "Left",
-            ChatMember.BANNED: "Banned"
-        }.get(status, "Unknown")
+        admins = await update.effective_chat.get_administrators()
+        for admin in admins:
+            if admin.user.id == user_id:
+                status_str = "Creator" if admin.status == "creator" else "Administrator"
+                break
+        else:
+            # Not an admin – try to get member status (restricted, left, banned)
+            try:
+                member = await update.effective_chat.get_member(user_id)
+                if member.status == "restricted":
+                    status_str = "Restricted"
+                elif member.status == "left":
+                    status_str = "Left"
+                elif member.status == "banned":
+                    status_str = "Banned"
+                else:
+                    status_str = "Member"
+            except:
+                pass
     except:
         pass
 
