@@ -175,8 +175,7 @@ async def auto_night_scheduler(bot):
                 except:
                     pass
         await asyncio.sleep(60)
-
-# -------------------- Command handlers --------------------
+        # -------------------- Command handlers --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         msg = (
@@ -375,8 +374,7 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🔊 Unmuted @{username}")
     except Exception as e:
         await update.message.reply_text(f"Failed to unmute: {e}")
-
-async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
@@ -581,7 +579,7 @@ async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings["filters"][word] = reply
         save_data()
         await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll reply: '{reply}'")
-        
+
 async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -616,30 +614,6 @@ async def antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text("✅ Anti-spam disabled.")
 
-async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    info = force_join_waiting.get(user.id)
-    if not info:
-        await query.edit_message_text("Verification expired. Please rejoin the group or contact an admin.")
-        return
-    chat_id = info["chat_id"]
-    channel = info["channel"]
-    if await is_user_in_channel(user.id, channel, context.bot):
-        await unmute_user(chat_id, user.id, context.bot)
-        await query.edit_message_text("✅ Verification successful! You may now chat in the group.")
-        await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
-        force_join_waiting.pop(user.id, None)
-    else:
-        # Do NOT remove the button – just alert the user
-        await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
-        # Optional: send a temporary visible message (doesn't affect the button)
-        try:
-            await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} before clicking the button.", disable_notification=True)
-        except:
-            pass
-            
 async def media_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -681,6 +655,27 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("No non‑bot admins found.")
         except:
             await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
+            async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /forcesubscribe @channelusername\nTo remove: /forcesubscribe off")
+        return
+    channel = context.args[0]
+    chat_id = update.effective_chat.id
+    settings = get_chat_settings(chat_id)
+    if channel.lower() == "off":
+        settings["force_subscribe"] = None
+        save_data()
+        await update.message.reply_text("Force subscribe removed.")
+        return
+    if not channel.startswith("@"):
+        await update.message.reply_text("Channel must start with @")
+        return
+    settings["force_subscribe"] = channel
+    save_data()
+    await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
 
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -698,7 +693,12 @@ async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT
         await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
         force_join_waiting.pop(user.id, None)
     else:
-        await query.edit_message_text(f"You have not joined {channel} yet. Please join first, then click the button again.")
+        # Do NOT remove the button – just alert the user
+        await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
+        try:
+            await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} before clicking the button.", disable_notification=True)
+        except:
+            pass
 
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -748,8 +748,7 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has joined {channel} and has been unmuted automatically.")
             except:
                 pass
-
-    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
+                    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
         if update.message.photo or update.message.video or update.message.document or update.message.audio:
             await delete_message_safe(update.message)
             return
