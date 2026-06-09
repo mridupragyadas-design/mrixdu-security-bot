@@ -763,7 +763,8 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pack_name and pack_name in settings.get("banned_sticker_packs", []):
             await delete_message_safe(update.message)
             return
-                text = update.message.text or update.message.caption or ""
+
+    text = update.message.text or update.message.caption or ""
     text_lower = text.lower()
     if any(word in text_lower for word in settings.get("blocked_words", [])):
         await delete_message_safe(update.message)
