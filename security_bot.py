@@ -374,26 +374,36 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
-    if not context.args:
-        await update.message.reply_text("Usage: /unmute @username")
+
+    target_user = None
+
+    # Case 1: reply to a message
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    # Case 2: /unmute @username
+    elif context.args:
+        username = context.args[0].lstrip('@')
+        user_info = get_user_by_username(username)
+        if not user_info:
+            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
+            return
+        user_id = user_info[0]
+        try:
+            member = await update.effective_chat.get_member(user_id)
+            target_user = member.user
+        except:
+            await update.message.reply_text(f"User @{username} found in DB but not in group.")
+            return
+    else:
+        await update.message.reply_text("Usage: /unmute @username or reply to a user's message with /unmute")
         return
-    username = context.args[0].lstrip('@')
-    user_info = get_user_by_username(username)
-    if not user_info:
-        await update.message.reply_text(f"❌ User @{username} not found.")
-        return
-    user_id = user_info[0]
+
     try:
         perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
-        await update.effective_chat.restrict_member(user_id, perms)
-        await update.message.reply_text(f"🔊 Unmuted @{username}")
+        await update.effective_chat.restrict_member(target_user.id, perms)
+        await update.message.reply_text(f"🔊 Unmuted {target_user.first_name} (ID: {target_user.id})")
     except Exception as e:
         await update.message.reply_text(f"Failed to unmute: {e}")
-
-async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
 
     target_user = None
 
