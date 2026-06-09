@@ -464,24 +464,21 @@ async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /info @username or reply to a user's message with /info")
         return
 
-    # Now target_user is a User object
-    user_id = target_user.id
-    full_name = target_user.full_name
-    username = target_user.username or "NoUsername"
-
+    # Try to get group status, but don't fail if we can't
+    status_str = "Unknown"
     try:
-        member = await update.effective_chat.get_member(user_id)
+        member = await update.effective_chat.get_member(target_user.id)
         status = member.status
         status_str = {
-            ChatMember.CREATOR: "Creator",
-            ChatMember.ADMINISTRATOR: "Administrator",
-            ChatMember.MEMBER: "Member",
-            ChatMember.RESTRICTED: "Restricted",
-            ChatMember.LEFT: "Left",
-            ChatMember.BANNED: "Banned"
-        }.get(status, "Unknown")
-    except:
-        status_str = "Unknown"
+            "creator": "Creator",
+            "administrator": "Administrator",
+            "member": "Member",
+            "restricted": "Restricted",
+            "left": "Left",
+            "banned": "Banned"
+        }.get(str(status).lower(), str(status))
+    except Exception as e:
+        status_str = f"Could not fetch (bot admin? {e})"
 
     msg = (
         f"👤 **User Info**\n"
