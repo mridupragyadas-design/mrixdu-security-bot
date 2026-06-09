@@ -698,9 +698,11 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = chat.id
     user_id = user.id
     settings = get_chat_settings(chat_id)
+
     if settings.get("night_mode", False) and not await is_group_admin(update, user_id):
         await delete_message_safe(update.message)
         return
+
     if not await is_group_admin(update, user_id):
         channel = settings.get("force_subscribe")
         if channel:
@@ -718,10 +720,12 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent = await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} to talk here.\n\nAfter joining, click the button below to verify:", reply_markup=keyboard)
                     force_join_waiting[user_id] = {"chat_id": chat_id, "channel": channel, "message_id": sent.message_id}
                 return
+
     if settings.get("media_off", False) and not await is_group_admin(update, user_id):
         if update.message.photo or update.message.video or update.message.document or update.message.audio:
             await delete_message_safe(update.message)
             return
+
     if update.message.sticker:
         if update.message.sticker.file_id in settings.get("blocked_stickers", []):
             await delete_message_safe(update.message)
@@ -730,25 +734,26 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pack_name and pack_name in settings.get("banned_sticker_packs", []):
             await delete_message_safe(update.message)
             return
+
     text = update.message.text or update.message.caption or ""
     text_lower = text.lower()
     if any(word in text_lower for word in settings.get("blocked_words", [])):
         await delete_message_safe(update.message)
         return
 
-    # Check filters (auto‑reply, supports photos)
-for word, stored in settings.get("filters", {}).items():
-    if word in text_lower.split():
-        # If stored is a photo file_id (starts with AgAC/BQAC/CAAC), send as photo
-        if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
-            try:
-                await update.message.reply_photo(stored)
-            except:
-                await update.message.reply_text("Error sending photo.")
-        else:
-            await update.message.reply_text(stored)
-        await delete_message_safe(update.message)
-        break
+    # Check filters (auto‑reply, supports photos)  ← this comment is indented 4 spaces
+    for word, stored in settings.get("filters", {}).items():
+        if word in text_lower.split():
+            # If stored is a photo file_id, send as photo
+            if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
+                try:
+                    await update.message.reply_photo(stored)
+                except:
+                    await update.message.reply_text("Error sending photo.")
+            else:
+                await update.message.reply_text(stored)
+            await delete_message_safe(update.message)
+            break
 
     if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
         key = (chat_id, user_id)
