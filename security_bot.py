@@ -555,37 +555,19 @@ async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Admins only.")
         return
 
-    # Check if there's a photo in the replied message or in the command message
-    photo_file_id = None
-    if update.message.reply_to_message and update.message.reply_to_message.photo:
-        # User replied to a photo message
-        photo_file_id = update.message.reply_to_message.photo[-1].file_id
-    elif update.message.photo:
-        # User sent a photo with the command (caption can be the word)
-        photo_file_id = update.message.photo[-1].file_id
-
-    # Get the word from command arguments
-    if not context.args:
-        await update.message.reply_text("Usage: /filter word [optional reply to a photo]\n\nIf you reply to a photo, that photo will be sent when the word is triggered. Otherwise, you must provide a text reply after the word.")
-        return
-
-    word = context.args[0].lower()
-    # If a photo is provided, we store the photo file_id as the "reply"
-    if photo_file_id:
-        settings = get_chat_settings(update.effective_chat.id)
-        settings["filters"][word] = photo_file_id  # store photo file_id
-        save_data()
-        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll send the attached photo.")
-    else:
-        # Otherwise, treat as before: store text reply (everything after the word)
-        if len(context.args) < 2:
-            await update.message.reply_text("Usage: /filter word reply_message\nExample: /filter done Hero\nOr reply to a photo to use that as reply.")
-            return
-        reply = " ".join(context.args[1:])
-        settings = get_chat_settings(update.effective_chat.id)
-        settings["filters"][word] = reply
-        save_data()
-        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll reply: '{reply}'")
+    # Check filters (auto‑reply, supports photos)
+for word, stored in settings.get("filters", {}).items():
+    if word in text_lower.split():
+        # If stored is a photo file_id (starts with AgAC/BQAC/CAAC), send as photo
+        if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
+            try:
+                await update.message.reply_photo(stored)
+            except:
+                await update.message.reply_text("Error sending photo.")
+        else:
+            await update.message.reply_text(stored)
+        await delete_message_safe(update.message)
+        break
 
 async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
@@ -754,15 +736,15 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_message_safe(update.message)
         return
 
-# Check filters (auto‑reply, supports photos)
+    # Check filters (auto‑reply, supports photos)
 for word, stored in settings.get("filters", {}).items():
     if word in text_lower.split():
-        # If the stored value looks like a file_id (starts with "AgAC" or "BQAC" or "CAAC"), send as photo
+        # If stored is a photo file_id (starts with AgAC/BQAC/CAAC), send as photo
         if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
             try:
                 await update.message.reply_photo(stored)
             except:
-                await update.message.reply_text("Error sending photo, maybe the file_id is invalid.")
+                await update.message.reply_text("Error sending photo.")
         else:
             await update.message.reply_text(stored)
         await delete_message_safe(update.message)
