@@ -405,7 +405,12 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Failed to unmute: {e}")
 
-    target_user = None
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_group_admin(update, update.effective_user.id):
+        await update.message.reply_text("⚠️ Admins only.")
+        return
+
+target_user = None
 
     # Case 1: reply to a message
     if update.message.reply_to_message:
