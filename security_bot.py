@@ -175,7 +175,7 @@ async def auto_night_scheduler(bot):
                 except:
                     pass
         await asyncio.sleep(60)
-        # -------------------- Command handlers --------------------
+        # -------------------- Command handlers (basic) --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         msg = (
@@ -232,8 +232,8 @@ async def commands_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         text = (
             "📋 **All Commands**\n\n"
-            "• `/ban @username\n"
-            "• `/kick @username\n"
+            "• `/ban @username`\n"
+            "• `/kick @username`\n"
             "• `/mute @username`\n"
             "• `/unmute @username`\n"
             "• `/info @username`\n"
@@ -432,7 +432,7 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
-# -------------------- Word, Sticker, Filter, Media, Anti-spam, Force subscribe --------------------
+# -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
 async def block_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -631,8 +631,7 @@ async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["media_off"] = False
     save_data()
     await update.message.reply_text("✅ Media allowed for everyone.")
-
-async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     text = update.message.text
@@ -655,7 +654,8 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("No non‑bot admins found.")
         except:
             await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
-            async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
@@ -748,7 +748,8 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has joined {channel} and has been unmuted automatically.")
             except:
                 pass
-                    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
+
+    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
         if update.message.photo or update.message.video or update.message.document or update.message.audio:
             await delete_message_safe(update.message)
             return
@@ -761,8 +762,7 @@ async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pack_name and pack_name in settings.get("banned_sticker_packs", []):
             await delete_message_safe(update.message)
             return
-
-    text = update.message.text or update.message.caption or ""
+                text = update.message.text or update.message.caption or ""
     text_lower = text.lower()
     if any(word in text_lower for word in settings.get("blocked_words", [])):
         await delete_message_safe(update.message)
