@@ -175,7 +175,7 @@ async def auto_night_scheduler(bot):
                 except:
                     pass
         await asyncio.sleep(60)
-        # -------------------- Command handlers (basic) --------------------
+        # -------------------- Command handlers --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         msg = (
@@ -374,7 +374,8 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🔊 Unmuted @{username}")
     except Exception as e:
         await update.message.reply_text(f"Failed to unmute: {e}")
-        async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
         return
@@ -431,8 +432,7 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📌 Status in group: {status_str}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
-
-# -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
+    # -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
 async def block_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -631,7 +631,8 @@ async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["media_off"] = False
     save_data()
     await update.message.reply_text("✅ Media allowed for everyone.")
-    async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     text = update.message.text
@@ -654,7 +655,7 @@ async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("No non‑bot admins found.")
         except:
             await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
-
+            # -------------------- Forcesubscribe (added) and callback (corrected) --------------------
 async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
