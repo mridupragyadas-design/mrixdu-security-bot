@@ -55,7 +55,7 @@ def get_user_by_username(username: str):
 # ---------------------------------------------------------
 
 # -------------------- Configuration --------------------
-BOT_TOKEN = os.environ.get('SECURITY_BOT_TOKEN', '8970227707:AAEKJET1RexTNUSlH_i0cmURgFeVdmivmFo')
+BOT_TOKEN = os.environ.get('SECURITY_BOT_TOKEN', '8970227707:AAE7gHha6huxmuSvfgIzCwOOgBXC6_GsOyw')
 DATA_FILE = "security_bot_data.json"
 
 DEFAULT_NIGHT_ON = "01:00"
