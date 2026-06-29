@@ -932,6 +932,141 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to demote: \nCan promote or demote members only")
 
+# ==================== USER HISTORY TRACKING ====================
+HISTORY_FILE = "user_history.json"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_history(data):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+history_db = load_history()
+
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Track every message sender automatically (name & username changes)."""
+    user = update.effective_user
+    if not user:
+        return
+
+    user_id = str(user.id)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    current_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    current_username = user.username or "No username"
+
+    if user_id not in history_db:
+        history_db[user_id] = {
+            "names": [],
+            "usernames": []
+        }
+
+    user_data = history_db[user_id]
+
+    # Track name changes
+    if not user_data["names"] or user_data["names"][-1]["value"] != current_name:
+        user_data["names"].append({"value": current_name, "date": now})
+
+    # Track username changes
+    if not user_data["usernames"] or user_data["usernames"][-1]["value"] != current_username:
+        user_data["usernames"].append({"value": current_username, "date": now})
+
+    save_history(history_db)
+
+async def send_history(update: Update, user_id: str, data: dict, target_user: any = None):
+    """Format and send history message."""
+    names = data.get("names", [])
+    usernames = data.get("usernames", [])
+
+    # Get current username if available
+    current_username = "N/A"
+    if target_user and target_user.username:
+        current_username = f"@{target_user.username}"
+    elif usernames:
+        current_username = f"@{usernames[-1]['value']}"
+
+    text = f"📋 <b>History for</b> {current_username}\n"
+    text += f"🆔 <code>{user_id}</code>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n"
+
+    # Name history
+    text += f"\n👤 <b>Name History ({len(names)} records):</b>\n"
+    if names:
+        for i, entry in enumerate(reversed(names[-10:]), 1):
+            text += f"  {i}. <b>{entry['value']}</b>\n"
+            text += f"      🕐 {entry['date']}\n"
+    else:
+        text += "  No name history found.\n"
+
+    # Username history
+    text += f"\n🔖 <b>Username History ({len(usernames)} records):</b>\n"
+    if usernames:
+        for i, entry in enumerate(reversed(usernames[-10:]), 1):
+            text += f"  {i}. <b>@{entry['value']}</b>\n"
+            text += f"      🕐 {entry['date']}\n"
+    else:
+        text += "  No username history found.\n"
+
+    text += "\n━━━━━━━━━━━━━━━━━━━━"
+    text += "\n⚡ Powered by MRIXDU BOT"
+
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show name/username history for a user."""
+    chat = update.effective_chat
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("❌ This command only works in groups!")
+        return
+
+    # Get target user
+    target_user = None
+    user_id = None
+
+    # Case 1: reply to a message
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        user_id = str(target_user.id)
+        if user_id in history_db:
+            await send_history(update, user_id, history_db[user_id], target_user)
+        else:
+            await update.message.reply_text("❌ No history found! User must send a message first.")
+        return
+
+    # Case 2: /history @username
+    elif context.args:
+        username = context.args[0].replace("@", "").lower()
+        # Search in history db by username
+        found = False
+        for uid, data in history_db.items():
+            if data.get("usernames"):
+                last_username = data["usernames"][-1]["value"].lower().replace("@", "")
+                if last_username == username:
+                    # Try to get current user info from group
+                    try:
+                        member = await chat.get_member(int(uid))
+                        target_user = member.user
+                    except:
+                        target_user = None
+                    await send_history(update, uid, data, target_user)
+                    found = True
+                    break
+        if not found:
+            await update.message.reply_text("❌ User not found in history! They must have sent a message first.")
+        return
+
+    else:
+        await update.message.reply_text("❌ Usage: /history @username or reply to a user.")
+        return
+
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -1067,6 +1202,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, guard_message), group=1)
     app.add_handler(CommandHandler("promote", promote_user))
     app.add_handler(CommandHandler("demote", demote_user))
+    app.add_handler(CommandHandler("history", history_command))
     print("🛡️ MRIXDU Protection Bot is running...")
     app.run_polling()
 
