@@ -870,7 +870,7 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to promote: {e}\nCan Promote Members only")
+        await update.message.reply_text(f"❌ Failed to promote: \nCan Promote Members only")
 
 async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Demote a user from admin in the group."""
@@ -930,7 +930,7 @@ async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to demote: {e}\nCan promote or demote members only")
+        await update.message.reply_text(f"❌ Failed to demote: \nCan promote or demote members only")
 
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
