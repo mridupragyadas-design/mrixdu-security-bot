@@ -11,6 +11,10 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ContextTypes, filters
 )
+from telegram.error import TelegramError
+from telethon import TelegramClient
+from telethon.tl.functions.channels import GetParticipantsRequest
+from telethon.tl.types import ChannelParticipantsSearch
 import pytz
 
 # -------------------- Flask web server --------------------
@@ -1101,16 +1105,125 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Usage: /history @username or reply to a user.")
     return
 
+# ─────────────────────────────────────────
+# Check if user is deleted account
+# ─────────────────────────────────────────
+def is_deleted(user):
+    if user is None:
+        return True
+    # Deleted accounts have no username,
+    # no last name, first name is empty or
+    # "Deleted Account"
+    if getattr(user, 'deleted', False):
+        return True
+    if getattr(user, 'first_name', '') == "Deleted Account":
+        return True
+    if (not getattr(user, 'first_name', '')
+            and not getattr(user, 'last_name', '')
+            and not getattr(user, 'username', '')):
+        return True
+    return False
+
+
+# ─────────────────────────────────────────
+# FETCH ALL MEMBERS using Telethon
+# This bypasses Telegram Bot API limitation
+# ─────────────────────────────────────────
+async def get_all_members(chat_id):
+    all_users = []
+
+    async with TelegramClient('scanner', API_ID, API_HASH) as client:
+        offset = 0
+        limit = 200
+
+        while True:
+            participants = await client(GetParticipantsRequest(
+                channel=chat_id,
+                filter=ChannelParticipantsSearch(''),
+                offset=offset,
+                limit=limit,
+                hash=0
+            ))
+
+            if not participants.users:
+                break
+
+            all_users.extend(participants.users)
+            offset += len(participants.users)
+
+            if len(participants.users) < limit:
+                break
+
+            await asyncio.sleep(1)  # avoid flood wait
+
+    return all_users
+
+
+# ─────────────────────────────────────────
+# CORE SCAN & DELETE using Telethon members
+# ─────────────────────────────────────────
+async def do_scan(bot, chat_id, msg=None):
+    deleted_count = 0
+    failed_count = 0
+    scanned_count = 0
+    deleted_users = []
+
+    try:
+        # ✅ Get ALL members via Telethon
+        all_members = await get_all_members(chat_id)
+    except Exception as e:
+        raise Exception(f"Failed to fetch members: {e}")
+
+    total = len(all_members)
+
+    if msg:
+        await msg.edit_text(
+            f"👥 <b>Found {total} members</b>\n"
+            f"🔍 Scanning for deleted accounts...",
+            parse_mode="HTML"
+        )
+
+    for user in all_members:
+        scanned_count += 1
+
+        # Update progress every 50 users
+        if msg and scanned_count % 50 == 0:
+            try:
+                await msg.edit_text(
+                    f"🔍 <b>Scanning...</b>\n"
+                    f"👤 Scanned: {scanned_count}/{total}\n"
+                    f"🗑 Deleted found: {deleted_count}",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        if is_deleted(user):
+            try:
+                await bot.ban_chat_member(chat_id, user.id)
+                await asyncio.sleep(0.5)
+                await bot.unban_chat_member(chat_id, user.id)
+                deleted_count += 1
+                deleted_users.append(f"• ID: <code>{user.id}</code>")
+            except TelegramError:
+                failed_count += 1
+
+        await asyncio.sleep(0.05)
+
+    return scanned_count, deleted_count, failed_count, deleted_users
+
+
+# ─────────────────────────────────────────
+# /stats
+# ─────────────────────────────────────────
 async def clean_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show group statistics."""
     chat = update.effective_chat
 
     if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
+        await update.message.reply_text("❌ Groups only!")
         return
 
     try:
-        # ✅ FIX: use context.bot instead of chat.get_member_count()
         total = await context.bot.get_chat_member_count(chat.id)
         text = (
             f"📊 <b>Group Statistics</b>\n\n"
@@ -1121,140 +1234,83 @@ async def clean_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Run /clean to remove deleted accounts!"
         )
         await update.message.reply_text(text, parse_mode="HTML")
-
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+# ─────────────────────────────────────────
+# /clean
+# ─────────────────────────────────────────
 async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Scan and remove deleted/ghost accounts."""
     chat = update.effective_chat
     caller = update.effective_user
 
     if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
+        await update.message.reply_text("❌ Groups only!")
         return
 
     try:
-        # ✅ FIX: use context.bot instead of chat.get_member()
         caller_member = await context.bot.get_chat_member(chat.id, caller.id)
         if caller_member.status not in ["administrator", "creator"]:
             await update.message.reply_text("❌ Only admins can use this command!")
             return
-    except:
-        await update.message.reply_text("❌ I am not an admin in this group!")
+    except Exception:
+        await update.message.reply_text("❌ Cannot verify admin status!")
         return
 
     msg = await update.message.reply_text(
-        "🔍 <b>Scanning for deleted accounts...</b>\n"
-        "⏳ Please wait, this may take a while!",
+        "🔍 <b>Fetching all members...</b>\n"
+        "⏳ Please wait!",
         parse_mode="HTML"
     )
 
-    deleted_count = 0
-    failed_count = 0
-    scanned_count = 0
-    deleted_users = []
-
     try:
-        # ✅ FIX: chat.get_members() doesn't exist
-        # Only admins list is fetchable via Telegram Bot API
-        members = await context.bot.get_chat_administrators(chat.id)
-
-        for member in members:
-            scanned_count += 1
-            user = member.user
-
-            if scanned_count % 50 == 0:
-                try:
-                    await msg.edit_text(
-                        f"🔍 <b>Scanning...</b>\n"
-                        f"👤 Scanned: {scanned_count}\n"
-                        f"🗑 Deleted found: {deleted_count}",
-                        parse_mode="HTML"
-                    )
-                except:
-                    pass
-
-            if (
-                user.first_name == "Deleted Account"
-                or (not user.username and not user.last_name
-                    and user.first_name in ["Deleted Account", ""])
-            ):
-                try:
-                    # ✅ FIX: use context.bot instead of chat.ban_member()
-                    await context.bot.ban_chat_member(chat.id, user.id)
-                    await asyncio.sleep(0.5)
-                    await context.bot.unban_chat_member(chat.id, user.id)
-                    deleted_count += 1
-                    deleted_users.append(f"• ID: <code>{user.id}</code>")
-                except Exception:
-                    failed_count += 1
-
-            await asyncio.sleep(0.05)
-
+        scanned, deleted, failed, deleted_users = await do_scan(
+            context.bot, chat.id, msg
+        )
     except Exception as e:
         await msg.edit_text(
-            f"❌ <b>Error during scan:</b> {e}\n\n"
+            f"❌ <b>Error:</b> {e}\n\n"
             f"Make sure:\n"
-            f"1. I am an admin in this group\n"
-            f"2. This is a supergroup\n"
-            f"3. I have <b>Ban Users</b> permission!",
+            f"1. Bot is admin with Ban Users permission\n"
+            f"2. API_ID and API_HASH are correct\n"
+            f"3. This is a supergroup",
             parse_mode="HTML"
         )
         return
 
     result = (
         f"✅ <b>Scan Complete!</b>\n\n"
-        f"👥 <b>Total Scanned:</b> {scanned_count}\n"
-        f"🗑 <b>Deleted Accounts Removed:</b> {deleted_count}\n"
-        f"⚠️ <b>Failed to Remove:</b> {failed_count}\n"
+        f"👥 <b>Total Scanned:</b> {scanned}\n"
+        f"🗑 <b>Deleted Removed:</b> {deleted}\n"
+        f"⚠️ <b>Failed:</b> {failed}\n"
         f"🕐 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
     )
 
     if deleted_users:
-        result += f"\n<b>Removed IDs:</b>\n" + "\n".join(deleted_users[:20])
+        result += "\n<b>Removed IDs:</b>\n" + "\n".join(deleted_users[:20])
         if len(deleted_users) > 20:
             result += f"\n... and {len(deleted_users) - 20} more"
 
-    if deleted_count == 0:
-        result += "\n🎉 <b>Group is clean! No deleted accounts found.</b>"
+    if deleted == 0:
+        result += "\n\n🎉 <b>Group is clean! No deleted accounts found.</b>"
 
     result += "\n\n⚡ <b>Powered by MRIXDU BOT</b>"
     await msg.edit_text(result, parse_mode="HTML")
 
 
+# ─────────────────────────────────────────
+# AUTO CLEAN JOB
+# ─────────────────────────────────────────
 async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
-    """Auto clean job (runs every 24 hours)."""
     chat_id = context.job.chat_id
-    deleted_count = 0
-
     try:
-        # ✅ FIX: use get_chat_administrators instead of chat.get_members()
-        members = await context.bot.get_chat_administrators(chat_id)
-
-        for member in members:
-            user = member.user
-            if (
-                user.first_name == "Deleted Account"
-                or (not user.username and not user.last_name
-                    and user.first_name in ["Deleted Account", ""])
-            ):
-                try:
-                    # ✅ FIX: use context.bot instead of chat.ban_member()
-                    await context.bot.ban_chat_member(chat_id, user.id)
-                    await asyncio.sleep(0.5)
-                    await context.bot.unban_chat_member(chat_id, user.id)
-                    deleted_count += 1
-                except Exception:
-                    pass
-            await asyncio.sleep(0.05)
-
-        if deleted_count > 0:
+        _, deleted, _, _ = await do_scan(context.bot, chat_id)
+        if deleted > 0:
             await context.bot.send_message(
                 chat_id,
                 f"🤖 <b>Auto Clean Complete!</b>\n"
-                f"🗑 Removed <b>{deleted_count}</b> deleted accounts automatically.\n"
+                f"🗑 Removed <b>{deleted}</b> deleted accounts.\n"
                 f"⚡ Powered by MRIXDU BOT",
                 parse_mode="HTML"
             )
@@ -1262,8 +1318,10 @@ async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
         print(f"Auto clean error: {e}")
 
 
+# ─────────────────────────────────────────
+# /autoclean
+# ─────────────────────────────────────────
 async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enable auto clean every 24 hours."""
     chat = update.effective_chat
     caller = update.effective_user
 
@@ -1272,77 +1330,76 @@ async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # ✅ FIX: use context.bot instead of chat.get_member()
         caller_member = await context.bot.get_chat_member(chat.id, caller.id)
         if caller_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("❌ Only admins can enable auto clean!")
+            await update.message.reply_text("❌ Only admins can use this command!")
             return
-    except:
-        await update.message.reply_text("❌ I am not an admin in this group!")
+    except Exception:
+        await update.message.reply_text("❌ Cannot verify admin status!")
         return
 
-    if context.job_queue:
-        # ✅ FIX: use get_jobs_by_name() instead of jobs()
-        for job in context.job_queue.get_jobs_by_name(str(chat.id)):
-            job.schedule_removal()
-
-        context.job_queue.run_repeating(
-            auto_clean_job,
-            interval=86400,
-            first=10,
-            chat_id=chat.id,
-            name=str(chat.id)
-        )
-
+    if context.job_queue is None:
         await update.message.reply_text(
-            "✅ <b>Auto Clean Enabled!</b>\n"
-            "🕐 I will scan and remove deleted accounts every <b>24 hours</b> automatically!\n\n"
+            "❌ <b>Job queue not available!</b>\n"
+            "<code>pip install python-telegram-bot[job-queue]</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    for job in context.job_queue.get_jobs_by_name(str(chat.id)):
+        job.schedule_removal()
+
+    context.job_queue.run_repeating(
+        auto_clean_job,
+        interval=86400,
+        first=10,
+        chat_id=chat.id,
+        name=str(chat.id)
+    )
+
+    await update.message.reply_text(
+        "✅ <b>Auto Clean Enabled!</b>\n"
+        "🕐 Scans every <b>24 hours</b> automatically!\n\n"
+        "⚡ Powered by MRIXDU BOT",
+        parse_mode="HTML"
+    )
+
+
+# ─────────────────────────────────────────
+# /stopclean
+# ─────────────────────────────────────────
+async def disable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    caller = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("❌ Groups only!")
+        return
+
+    try:
+        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
+        if caller_member.status not in ["administrator", "creator"]:
+            await update.message.reply_text("❌ Only admins can use this command!")
+            return
+    except Exception:
+        await update.message.reply_text("❌ Cannot verify admin status!")
+        return
+
+    if context.job_queue is None:
+        await update.message.reply_text("❌ Job queue not available!")
+        return
+
+    jobs = context.job_queue.get_jobs_by_name(str(chat.id))
+    if jobs:
+        for job in jobs:
+            job.schedule_removal()
+        await update.message.reply_text(
+            "🛑 <b>Auto Clean Disabled!</b>\n\n"
             "⚡ Powered by MRIXDU BOT",
             parse_mode="HTML"
         )
     else:
-        await update.message.reply_text(
-            "❌ Job queue is not available.\n"
-            "Run: <code>pip install python-telegram-bot[job-queue]</code>",
-            parse_mode="HTML"
-        )
-
-
-async def disable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Disable auto clean."""
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Groups only!")
-        return
-
-    try:
-        # ✅ FIX: use context.bot instead of chat.get_member()
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
-        if caller_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("❌ Only admins can disable auto clean!")
-            return
-    except:
-        await update.message.reply_text("❌ I am not an admin in this group!")
-        return
-
-    if context.job_queue:
-        # ✅ FIX: use get_jobs_by_name() instead of jobs()
-        jobs = context.job_queue.get_jobs_by_name(str(chat.id))
-        if jobs:
-            for job in jobs:
-                job.schedule_removal()
-            await update.message.reply_text(
-                "❌ <b>Auto Clean Disabled!</b>\n"
-                "I will no longer automatically scan for deleted accounts.\n\n"
-                "⚡ Powered by MRIXDU BOT",
-                parse_mode="HTML"
-            )
-        else:
-            await update.message.reply_text(
-                "⚠️ Auto clean was not enabled for this group."
-            )
+        await update.message.reply_text("⚠️ Auto clean was not enabled!")
 
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
