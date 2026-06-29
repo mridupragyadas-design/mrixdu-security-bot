@@ -814,6 +814,124 @@ async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT
         # Only popup alert – no extra message in the group
         await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
 
+# ==================== PROMOTE / DEMOTE ====================
+async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Promote a user to admin in the group."""
+    chat = update.effective_chat
+    caller = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("❌ This command only works in groups!")
+        return
+
+    # Must reply to a message OR provide @username
+    target_user = None
+
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    elif context.args:
+        username = context.args[0].replace("@", "")
+        try:
+            chat_member = await context.bot.get_chat_member(chat.id, f"@{username}")
+            target_user = chat_member.user
+        except Exception:
+            await update.message.reply_text("❌ User not found! They must be in the group.")
+            return
+    else:
+        await update.message.reply_text("❌ Usage: /promote @username or reply to a user.")
+        return
+
+    # Check if user is already an admin
+    try:
+        member = await chat.get_member(target_user.id)
+        if member.status in ["administrator", "creator"]:
+            await update.message.reply_text(f"⚠️ {target_user.first_name} is already an admin!")
+            return
+    except:
+        pass
+
+    try:
+        await context.bot.promote_chat_member(
+            chat_id=chat.id,
+            user_id=target_user.id,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_restrict_members=True,
+            can_invite_users=True,
+            can_pin_messages=True,
+            can_manage_video_chats=True,
+        )
+
+        name = target_user.username and f"@{target_user.username}" or target_user.first_name
+        await update.message.reply_text(
+            f"✅ <b>{name}</b> has been promoted to Admin!\n"
+            f"👤 Promoted by: @{caller.username or caller.first_name}",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to promote: {e}\nMake sure I have promote permissions!")
+
+async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Demote a user from admin in the group."""
+    chat = update.effective_chat
+    caller = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("❌ This command only works in groups!")
+        return
+
+    target_user = None
+
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+    elif context.args:
+        username = context.args[0].replace("@", "")
+        try:
+            chat_member = await context.bot.get_chat_member(chat.id, f"@{username}")
+            target_user = chat_member.user
+        except Exception:
+            await update.message.reply_text("❌ User not found! They must be in the group.")
+            return
+    else:
+        await update.message.reply_text("❌ Usage: /demote @username or reply to a user.")
+        return
+
+    # Check if user is the creator (cannot demote creator)
+    try:
+        member = await chat.get_member(target_user.id)
+        if member.status == "creator":
+            await update.message.reply_text("⚠️ Cannot demote the group creator!")
+            return
+        if member.status not in ["administrator"]:
+            await update.message.reply_text(f"⚠️ {target_user.first_name} is not an admin!")
+            return
+    except:
+        pass
+
+    try:
+        # Remove all admin permissions = demote
+        await context.bot.promote_chat_member(
+            chat_id=chat.id,
+            user_id=target_user.id,
+            can_manage_chat=False,
+            can_delete_messages=False,
+            can_restrict_members=False,
+            can_invite_users=False,
+            can_pin_messages=False,
+            can_manage_video_chats=False,
+        )
+
+        name = target_user.username and f"@{target_user.username}" or target_user.first_name
+        await update.message.reply_text(
+            f"⬇️ <b>{name}</b> has been demoted from Admin!\n"
+            f"👤 Demoted by: @{caller.username or caller.first_name}",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to demote: {e}\nMake sure I have promote permissions!")
+
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -947,6 +1065,8 @@ def main():
     app.add_handler(CallbackQueryHandler(force_subscribe_callback, pattern="check_subscribe"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_mention), group=0)
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, guard_message), group=1)
+    app.add_handler(CommandHandler("promote", promote_user))
+    app.add_handler(CommandHandler("demote", demote_user))
     print("🛡️ MRIXDU Protection Bot is running...")
     app.run_polling()
 
