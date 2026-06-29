@@ -1019,6 +1019,40 @@ async def send_history(update: Update, user_id: str, data: dict, target_user: an
 
     await update.message.reply_text(text, parse_mode="HTML")
 
+async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Track every message sender automatically (name & username changes)."""
+    user = update.effective_user
+    if not user:
+        return
+
+    print(f"📝 Tracking message from {user.id}")  # Debug log
+
+    user_id = str(user.id)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    current_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    current_username = user.username or "No username"
+
+    if user_id not in history_db:
+        history_db[user_id] = {
+            "names": [],
+            "usernames": []
+        }
+
+    user_data = history_db[user_id]
+
+    # Track name changes
+    if not user_data["names"] or user_data["names"][-1]["value"] != current_name:
+        user_data["names"].append({"value": current_name, "date": now})
+        print(f"  ✅ New name: {current_name}")
+
+    # Track username changes
+    if not user_data["usernames"] or user_data["usernames"][-1]["value"] != current_username:
+        user_data["usernames"].append({"value": current_username, "date": now})
+        print(f"  ✅ New username: {current_username}")
+
+    save_history(history_db)
+
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show name/username history for a user."""
     chat = update.effective_chat
@@ -1171,6 +1205,7 @@ async def post_init(app):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.post_init = post_init
+    app.add_handler(MessageHandler(filters.ALL, track_user), group=-1)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("commands", commands_list))
     app.add_handler(CommandHandler("checkadmin", check_admin))
