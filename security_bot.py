@@ -740,24 +740,44 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text and "@admin" in text.lower():
         chat = update.effective_chat
+        
+        # Try to get admins (works in supergroups)
+        admins = []
         try:
-            admins = []
             async for member in chat.get_administrators():
                 if not member.user.is_bot:
                     admins.append(member.user)
-            if admins:
-                mentions = []
-                for admin in admins:
-                    if admin.username:
-                        mentions.append(f"@{admin.username}")
-                    else:
-                        mentions.append(f'<a href="tg://user?id={admin.id}">Admin</a>')
-                await update.message.reply_text(f"🚨 Admins notified: {' '.join(mentions)}", parse_mode="HTML")
-            else:
-                await update.message.reply_text("No non‑bot admins found.")
         except:
-            await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
-
+            # If it fails (normal group), try to get the creator
+            try:
+                # Get chat info to find creator
+                chat_info = await context.bot.get_chat(chat.id)
+                if chat_info and hasattr(chat_info, 'creator'):
+                    admins.append(chat_info.creator)
+                else:
+                    # Fallback: try to get the first admin from the group
+                    async for member in chat.get_administrators():
+                        if not member.user.is_bot:
+                            admins.append(member.user)
+                            break
+            except:
+                pass
+        
+        if admins:
+            mentions = []
+            for admin in admins:
+                if admin.username:
+                    mentions.append(f"@{admin.username}")
+                else:
+                    mentions.append(f'<a href="tg://user?id={admin.id}">{admin.first_name or "Admin"}</a>')
+            
+            mention_text = " ".join(mentions)
+            await update.message.reply_text(
+                f"🚨 Admins notified:\n{mention_text}",
+                parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text("⚠️ Could not fetch admins. Make sure I am an admin and the group is a supergroup.")
 # ==================== FORCESUBSCRIBE (must be at the same level as admin_mention, NOT inside it) ====================
 async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
