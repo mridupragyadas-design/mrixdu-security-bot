@@ -794,6 +794,7 @@ async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["force_subscribe"] = channel
     save_data()
     await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
+
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -810,13 +811,8 @@ async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT
         await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
         force_join_waiting.pop(user.id, None)
     else:
-        # ✅ Only show the popup alert, no extra message in the group
+        # Only popup alert – no extra message in the group
         await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
-        # ❌ REMOVE these lines:
-        # try:
-        #     await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} before clicking the button.", disable_notification=True)
-        # except:
-        #     pass
 
 async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
