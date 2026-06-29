@@ -740,26 +740,50 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text and "@admin" in text.lower():
         chat = update.effective_chat
-        
-        # Try to get admins (works in supergroups)
         admins = []
+        
         try:
+            # Try to get administrators (works in supergroups)
             async for member in chat.get_administrators():
                 if not member.user.is_bot:
                     admins.append(member.user)
         except:
-            # If it fails (normal group), try to get the creator
+            # If it fails, try alternative method
             try:
-                # Get chat info to find creator
+                # For normal groups, try to get the chat info
                 chat_info = await context.bot.get_chat(chat.id)
-                if chat_info and hasattr(chat_info, 'creator'):
+                
+                # Check if we can get the creator
+                if hasattr(chat_info, 'creator') and chat_info.creator:
                     admins.append(chat_info.creator)
-                else:
-                    # Fallback: try to get the first admin from the group
+                
+                # Also try to get the first admin from the group
+                try:
                     async for member in chat.get_administrators():
                         if not member.user.is_bot:
                             admins.append(member.user)
                             break
+                except:
+                    pass
+            except:
+                pass
+        
+        # If still no admins, try using the bot's admin list
+        if not admins:
+            try:
+                # Get the bot's own member info to check if it's admin
+                bot_member = await chat.get_member(context.bot.id)
+                if bot_member.status in ("administrator", "creator"):
+                    # Try one more time with a different approach
+                    try:
+                        # Use the full chat info
+                        chat_full = await context.bot.get_chat(chat.id, full=True)
+                        if hasattr(chat_full, 'administrators'):
+                            for admin in chat_full.administrators:
+                                if not admin.user.is_bot:
+                                    admins.append(admin.user)
+                    except:
+                        pass
             except:
                 pass
         
@@ -771,13 +795,20 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     mentions.append(f'<a href="tg://user?id={admin.id}">{admin.first_name or "Admin"}</a>')
             
-            mention_text = " ".join(mentions)
             await update.message.reply_text(
-                f"🚨 Admins notified:\n{mention_text}",
+                f"🚨 Admins notified:\n{' '.join(mentions)}",
                 parse_mode="HTML"
             )
         else:
-            await update.message.reply_text("⚠️ Could not fetch admins. Make sure I am an admin and the group is a supergroup.")
+            # If still no admins, show a helpful message
+            await update.message.reply_text(
+                "⚠️ Could not fetch admins.\n\n"
+                "Possible reasons:\n"
+                "1. This is not a supergroup (upgrade the group to a supergroup)\n"
+                "2. I am not an admin (promote me to admin)\n"
+                "3. I don't have permission to see admin list\n\n"
+                "You can use /checkadmin to verify my permissions."
+            )
 # ==================== FORCESUBSCRIBE (must be at the same level as admin_mention, NOT inside it) ====================
 async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
