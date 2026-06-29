@@ -1106,15 +1106,52 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return
 
 # ─────────────────────────────────────────
-# Check if user is deleted account
+# JSON STORAGE
+# ─────────────────────────────────────────
+MEMBERS_FILE = "members.json"
+
+def load_members():
+    if os.path.exists(MEMBERS_FILE):
+        with open(MEMBERS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_members(data):
+    with open(MEMBERS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def save_member(user_id, chat_id):
+    data = load_members()
+    chat_key = str(chat_id)
+    if chat_key not in data:
+        data[chat_key] = []
+    if user_id not in data[chat_key]:
+        data[chat_key].append(user_id)
+    save_members(data)
+
+def get_members(chat_id):
+    data = load_members()
+    return data.get(str(chat_id), [])
+
+
+# ─────────────────────────────────────────
+# TRACK MEMBERS
+# ─────────────────────────────────────────
+async def track_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat and user and chat.type in ["group", "supergroup"]:
+        save_member(user.id, chat.id)
+    if update.message and update.message.new_chat_members:
+        for new_user in update.message.new_chat_members:
+            save_member(new_user.id, chat.id)
+
+
+# ─────────────────────────────────────────
+# CHECK DELETED ACCOUNT
 # ─────────────────────────────────────────
 def is_deleted(user):
     if user is None:
-        return True
-    # Deleted accounts have no username,
-    # no last name, first name is empty or
-    # "Deleted Account"
-    if getattr(user, 'deleted', False):
         return True
     if getattr(user, 'first_name', '') == "Deleted Account":
         return True
@@ -1126,41 +1163,7 @@ def is_deleted(user):
 
 
 # ─────────────────────────────────────────
-# FETCH ALL MEMBERS using Telethon
-# This bypasses Telegram Bot API limitation
-# ─────────────────────────────────────────
-async def get_all_members(chat_id):
-    all_users = []
-
-    async with TelegramClient('scanner', API_ID, API_HASH) as client:
-        offset = 0
-        limit = 200
-
-        while True:
-            participants = await client(GetParticipantsRequest(
-                channel=chat_id,
-                filter=ChannelParticipantsSearch(''),
-                offset=offset,
-                limit=limit,
-                hash=0
-            ))
-
-            if not participants.users:
-                break
-
-            all_users.extend(participants.users)
-            offset += len(participants.users)
-
-            if len(participants.users) < limit:
-                break
-
-            await asyncio.sleep(1)  # avoid flood wait
-
-    return all_users
-
-
-# ─────────────────────────────────────────
-# CORE SCAN & DELETE using Telethon members
+# CORE SCAN
 # ─────────────────────────────────────────
 async def do_scan(bot, chat_id, msg=None):
     deleted_count = 0
@@ -1168,25 +1171,32 @@ async def do_scan(bot, chat_id, msg=None):
     scanned_count = 0
     deleted_users = []
 
-    try:
-        # ✅ Get ALL members via Telethon
-        all_members = await get_all_members(chat_id)
-    except Exception as e:
-        raise Exception(f"Failed to fetch members: {e}")
+    member_ids = get_members(chat_id)
 
-    total = len(all_members)
+    try:
+        admins = await bot.get_chat_administrators(chat_id)
+        for admin in admins:
+            if admin.user.id not in member_ids:
+                member_ids.append(admin.user.id)
+                save_member(admin.user.id, chat_id)
+    except Exception:
+        pass
+
+    total = len(member_ids)
 
     if msg:
-        await msg.edit_text(
-            f"👥 <b>Found {total} members</b>\n"
-            f"🔍 Scanning for deleted accounts...",
-            parse_mode="HTML"
-        )
+        try:
+            await msg.edit_text(
+                f"👥 <b>Found {total} tracked members</b>\n"
+                f"🔍 Scanning for deleted accounts...",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
-    for user in all_members:
+    for uid in member_ids:
         scanned_count += 1
 
-        # Update progress every 50 users
         if msg and scanned_count % 50 == 0:
             try:
                 await msg.edit_text(
@@ -1198,14 +1208,26 @@ async def do_scan(bot, chat_id, msg=None):
             except Exception:
                 pass
 
-        if is_deleted(user):
+        try:
+            member = await bot.get_chat_member(chat_id, uid)
+            user = member.user
+            if is_deleted(user):
+                try:
+                    await bot.ban_chat_member(chat_id, uid)
+                    await asyncio.sleep(0.5)
+                    await bot.unban_chat_member(chat_id, uid)
+                    deleted_count += 1
+                    deleted_users.append(f"• ID: <code>{uid}</code>")
+                except TelegramError:
+                    failed_count += 1
+        except TelegramError:
             try:
-                await bot.ban_chat_member(chat_id, user.id)
-                await asyncio.sleep(0.5)
-                await bot.unban_chat_member(chat_id, user.id)
+                await bot.ban_chat_member(chat_id, uid)
+                await asyncio.sleep(0.3)
+                await bot.unban_chat_member(chat_id, uid)
                 deleted_count += 1
-                deleted_users.append(f"• ID: <code>{user.id}</code>")
-            except TelegramError:
+                deleted_users.append(f"• ID: <code>{uid}</code>")
+            except Exception:
                 failed_count += 1
 
         await asyncio.sleep(0.05)
@@ -1220,17 +1242,19 @@ async def clean_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
 
     if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Groups only!")
+        await update.message.reply_text("❌ This command only works in groups!")
         return
 
     try:
         total = await context.bot.get_chat_member_count(chat.id)
+        tracked = len(get_members(chat.id))
         text = (
             f"📊 <b>Group Statistics</b>\n\n"
             f"👥 <b>Group:</b> {chat.title}\n"
             f"🆔 <b>Chat ID:</b> <code>{chat.id}</code>\n"
             f"👤 <b>Total Members:</b> {total}\n"
-            f"🕐 <b>Checked at:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"🔍 <b>Tracked Members:</b> {tracked}\n"
+            f"🕐 <b>Checked at:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n\n"
             f"Run /clean to remove deleted accounts!"
         )
         await update.message.reply_text(text, parse_mode="HTML")
@@ -1246,7 +1270,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caller = update.effective_user
 
     if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Groups only!")
+        await update.message.reply_text("❌ This command only works in groups!")
         return
 
     try:
@@ -1259,7 +1283,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text(
-        "🔍 <b>Fetching all members...</b>\n"
+        "🔍 <b>Fetching tracked members...</b>\n"
         "⏳ Please wait!",
         parse_mode="HTML"
     )
@@ -1273,8 +1297,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ <b>Error:</b> {e}\n\n"
             f"Make sure:\n"
             f"1. Bot is admin with Ban Users permission\n"
-            f"2. API_ID and API_HASH are correct\n"
-            f"3. This is a supergroup",
+            f"2. This is a supergroup",
             parse_mode="HTML"
         )
         return
@@ -1284,7 +1307,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👥 <b>Total Scanned:</b> {scanned}\n"
         f"🗑 <b>Deleted Removed:</b> {deleted}\n"
         f"⚠️ <b>Failed:</b> {failed}\n"
-        f"🕐 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"🕐 <b>Time:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n"
     )
 
     if deleted_users:
@@ -1311,6 +1334,7 @@ async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
                 chat_id,
                 f"🤖 <b>Auto Clean Complete!</b>\n"
                 f"🗑 Removed <b>{deleted}</b> deleted accounts.\n"
+                f"🕐 <b>Time:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n"
                 f"⚡ Powered by MRIXDU BOT",
                 parse_mode="HTML"
             )
@@ -1358,9 +1382,10 @@ async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        "✅ <b>Auto Clean Enabled!</b>\n"
-        "🕐 Scans every <b>24 hours</b> automatically!\n\n"
-        "⚡ Powered by MRIXDU BOT",
+        f"✅ <b>Auto Clean Enabled!</b>\n"
+        f"🕐 Scans every <b>24 hours</b> automatically!\n"
+        f"🇮🇳 Time zone: <b>IST (India)</b>\n\n"
+        f"⚡ Powered by MRIXDU BOT",
         parse_mode="HTML"
     )
 
