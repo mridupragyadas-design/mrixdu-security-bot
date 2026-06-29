@@ -757,7 +757,8 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("No non‑bot admins found.")
         except:
             await update.message.reply_text("⚠️ @admin only works in **supergroups**. Please upgrade this group to a supergroup.")
-            # -------------------- Forcesubscribe (added) and callback (corrected) --------------------
+
+# ==================== FORCESUBSCRIBE (must be at the same level as admin_mention, NOT inside it) ====================
 async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, update.effective_user.id):
         await update.message.reply_text("⚠️ Admins only.")
@@ -779,7 +780,7 @@ async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["force_subscribe"] = channel
     save_data()
     await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
-
+    
 async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
