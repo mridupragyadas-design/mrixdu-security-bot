@@ -740,74 +740,37 @@ async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text and "@admin" in text.lower():
         chat = update.effective_chat
-        admins = []
+        
+        # Only works in groups/supergroups
+        if chat.type not in ["group", "supergroup"]:
+            await update.message.reply_text("This command only works in groups!")
+            return
         
         try:
-            # Try to get administrators (works in supergroups)
-            async for member in chat.get_administrators():
-                if not member.user.is_bot:
-                    admins.append(member.user)
-        except:
-            # If it fails, try alternative method
-            try:
-                # For normal groups, try to get the chat info
-                chat_info = await context.bot.get_chat(chat.id)
-                
-                # Check if we can get the creator
-                if hasattr(chat_info, 'creator') and chat_info.creator:
-                    admins.append(chat_info.creator)
-                
-                # Also try to get the first admin from the group
-                try:
-                    async for member in chat.get_administrators():
-                        if not member.user.is_bot:
-                            admins.append(member.user)
-                            break
-                except:
-                    pass
-            except:
-                pass
-        
-        # If still no admins, try using the bot's admin list
-        if not admins:
-            try:
-                # Get the bot's own member info to check if it's admin
-                bot_member = await chat.get_member(context.bot.id)
-                if bot_member.status in ("administrator", "creator"):
-                    # Try one more time with a different approach
-                    try:
-                        # Use the full chat info
-                        chat_full = await context.bot.get_chat(chat.id, full=True)
-                        if hasattr(chat_full, 'administrators'):
-                            for admin in chat_full.administrators:
-                                if not admin.user.is_bot:
-                                    admins.append(admin.user)
-                    except:
-                        pass
-            except:
-                pass
-        
-        if admins:
+            # Fetch all admins using the bot instance
+            admins = await context.bot.get_chat_administrators(chat.id)
+            
+            # Build mention list (skip bots)
             mentions = []
             for admin in admins:
-                if admin.username:
-                    mentions.append(f"@{admin.username}")
-                else:
-                    mentions.append(f'<a href="tg://user?id={admin.id}">{admin.first_name or "Admin"}</a>')
+                user = admin.user
+                if not user.is_bot:
+                    if user.username:
+                        mentions.append(f"@{user.username}")
+                    else:
+                        mentions.append(f'<a href="tg://user?id={user.id}">{user.first_name}</a>')
             
+            if mentions:
+                await update.message.reply_text(
+                    f"🚨 Admins notified:\n{' '.join(mentions)}",
+                    parse_mode="HTML"
+                )
+            else:
+                await update.message.reply_text("No non‑bot admins found.")
+                
+        except Exception as e:
             await update.message.reply_text(
-                f"🚨 Admins notified:\n{' '.join(mentions)}",
-                parse_mode="HTML"
-            )
-        else:
-            # If still no admins, show a helpful message
-            await update.message.reply_text(
-                "⚠️ Could not fetch admins.\n\n"
-                "Possible reasons:\n"
-                "1. This is not a supergroup (upgrade the group to a supergroup)\n"
-                "2. I am not an admin (promote me to admin)\n"
-                "3. I don't have permission to see admin list\n\n"
-                "You can use /checkadmin to verify my permissions."
+                f"❌ Error: {e}\nMake sure I am an admin and the group is a supergroup."
             )
 # ==================== FORCESUBSCRIBE (must be at the same level as admin_mention, NOT inside it) ====================
 async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
