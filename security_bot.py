@@ -1138,7 +1138,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Check if caller is admin
     try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
+        caller_member = await chat.get_member(caller.id)
         if caller_member.status not in ["administrator", "creator"]:
             await update.message.reply_text("❌ Only admins can use this command!")
             return
@@ -1159,8 +1159,8 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deleted_users = []
 
     try:
-        # Get all members
-        async for member in context.bot.get_chat_members(chat.id):
+        # Get all members using chat.get_members()
+        async for member in chat.get_members():
             scanned_count += 1
             user = member.user
 
@@ -1183,9 +1183,9 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     and user.first_name in ["Deleted Account", ""])
             ):
                 try:
-                    await context.bot.ban_chat_member(chat.id, user.id)
+                    await chat.ban_member(user.id)
                     await asyncio.sleep(0.5)
-                    await context.bot.unban_chat_member(chat.id, user.id)
+                    await chat.unban_member(user.id)
                     deleted_count += 1
                     deleted_users.append(f"• ID: <code>{user.id}</code>")
                 except Exception:
@@ -1228,7 +1228,10 @@ async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
     deleted_count = 0
 
     try:
-        async for member in context.bot.get_chat_members(chat_id):
+        # Get the chat object
+        chat = await context.bot.get_chat(chat_id)
+        
+        async for member in chat.get_members():
             user = member.user
             if (
                 user.first_name == "Deleted Account"
@@ -1236,9 +1239,9 @@ async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
                     and user.first_name in ["Deleted Account", ""])
             ):
                 try:
-                    await context.bot.ban_chat_member(chat_id, user.id)
+                    await chat.ban_member(user.id)
                     await asyncio.sleep(0.5)
-                    await context.bot.unban_chat_member(chat_id, user.id)
+                    await chat.unban_member(user.id)
                     deleted_count += 1
                 except Exception:
                     pass
@@ -1252,8 +1255,8 @@ async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
                 f"⚡ Powered by MRIXDU BOT",
                 parse_mode="HTML"
             )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Auto clean error: {e}")
 
 async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Enable auto clean every 24 hours."""
