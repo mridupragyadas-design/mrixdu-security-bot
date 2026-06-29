@@ -1113,7 +1113,7 @@ async def clean_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        total = await context.bot.get_chat_member_count(chat.id)
+        total = await chat.get_member_count()
         text = (
             f"📊 <b>Group Statistics</b>\n\n"
             f"👥 <b>Group:</b> {chat.title}\n"
@@ -1159,7 +1159,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deleted_users = []
 
     try:
-        # Get all members using chat.get_members()
+        # Use chat.get_members() - this works if bot is admin in supergroup
         async for member in chat.get_members():
             scanned_count += 1
             user = member.user
@@ -1196,7 +1196,10 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(
             f"❌ <b>Error during scan:</b> {e}\n\n"
-            f"Make sure I have <b>Ban Users</b> permission!",
+            f"Make sure:\n"
+            f"1. I am an admin in this group\n"
+            f"2. This is a supergroup\n"
+            f"3. I have <b>Ban Users</b> permission!",
             parse_mode="HTML"
         )
         return
@@ -1268,7 +1271,7 @@ async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
+        caller_member = await chat.get_member(caller.id)
         if caller_member.status not in ["administrator", "creator"]:
             await update.message.reply_text("❌ Only admins can enable auto clean!")
             return
@@ -1278,8 +1281,7 @@ async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.job_queue:
         # Remove existing job if any
-        current_jobs = context.job_queue.jobs()
-        for job in current_jobs:
+        for job in context.job_queue.jobs():
             if job.name == str(chat.id):
                 job.schedule_removal()
         
@@ -1312,7 +1314,7 @@ async def disable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
+        caller_member = await chat.get_member(caller.id)
         if caller_member.status not in ["administrator", "creator"]:
             await update.message.reply_text("❌ Only admins can disable auto clean!")
             return
@@ -1321,9 +1323,9 @@ async def disable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if context.job_queue:
-        current_jobs = context.job_queue.jobs()
+        jobs = context.job_queue.jobs()
         removed = False
-        for job in current_jobs:
+        for job in jobs:
             if job.name == str(chat.id):
                 job.schedule_removal()
                 removed = True
