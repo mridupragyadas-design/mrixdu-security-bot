@@ -1,1614 +1,1956 @@
-import os
-import json
-import asyncio
-import re
-import sqlite3
-from datetime import datetime, timedelta
-from threading import Thread
-from flask import Flask
-from telegram import Update, ChatPermissions, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
-from telegram.error import TelegramError
-from telethon import TelegramClient
-from telethon.tl.functions.channels import GetParticipantsRequest
-from telethon.tl.types import ChannelParticipantsSearch
-import pytz
+// Part 1: Imports, Type Definitions, and Configuration
 
-# -------------------- Flask web server --------------------
-flask_app = Flask(__name__)
+import * as fs from 'fs';
+import * as path from 'path';
+import * as express from 'express';
+import * as sqlite3 from 'sqlite3';
+import TelegramBot from 'node-telegram-bot-api';
+import moment from 'moment-timezone';
 
-@flask_app.route('/')
-def health():
-    return "Mrixdu Security++ Bot is running!"
+// -------------------- Type Definitions --------------------
+interface User {
+  id: number;
+  username?: string;
+  first_name: string;
+  last_name?: string;
+  is_bot?: boolean;
+}
 
-def run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    flask_app.run(host='0.0.0.0', port=port)
+interface ChatSettings {
+  night_mode: boolean;
+  night_on: string;
+  night_off: string;
+  blocked_words: string[];
+  blocked_stickers: string[];
+  banned_sticker_packs: string[];
+  filters: Record<string, string>;
+  anti_spam: boolean;
+  force_subscribe: string | null;
+  media_off: boolean;
+}
 
-Thread(target=run_flask, daemon=True).start()
-# ---------------------------------------------------------
+interface UserHistory {
+  names: Array<{ value: string; date: string }>;
+  usernames: Array<{ value: string; date: string }>;
+}
 
-# -------------------- SQLite Database --------------------
-DB_FILE = "users.db"
-db_conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-db_cursor = db_conn.cursor()
-db_cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        full_name TEXT
-    )
-""")
-db_conn.commit()
+interface ForceJoinWaiting {
+  chat_id: number;
+  channel: string;
+  message_id: number;
+}
 
-def save_user(user):
-    if not user.username:
-        return
-    db_cursor.execute("""
-        INSERT OR REPLACE INTO users (user_id, username, full_name)
-        VALUES (?, ?, ?)
-    """, (user.id, user.username.lower(), user.full_name))
-    db_conn.commit()
+interface MessageTracker {
+  [key: string]: number[];
+}
 
-def get_user_by_username(username: str):
-    db_cursor.execute("SELECT user_id, full_name FROM users WHERE username = ?", (username.lower(),))
-    return db_cursor.fetchone()
-# ---------------------------------------------------------
+// -------------------- Configuration --------------------
+const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN || '8970227707:AAE7gHha6huxmuSvfgIzCwOOgBXC6_GsOyw';
+const DATA_FILE = 'security_bot_data.json';
+const DB_FILE = 'users.db';
+const HISTORY_FILE = 'user_history.json';
+const MEMBERS_FILE = 'members.json';
 
-# -------------------- Configuration --------------------
-BOT_TOKEN = os.environ.get('SECURITY_BOT_TOKEN', '8970227707:AAE7gHha6huxmuSvfgIzCwOOgBXC6_GsOyw')
-DATA_FILE = "security_bot_data.json"
+const DEFAULT_NIGHT_ON = '01:00';
+const DEFAULT_NIGHT_OFF = '07:00';
+const SPAM_WINDOW = 5;
+const SPAM_MAX_MSGS = 5;
+const MUTE_DURATION = 300;
 
-DEFAULT_NIGHT_ON = "01:00"
-DEFAULT_NIGHT_OFF = "07:00"
+const IST = 'Asia/Kolkata';
 
-SPAM_WINDOW = 5
-SPAM_MAX_MSGS = 5
-MUTE_DURATION = 300
+// -------------------- Express Server --------------------
+const app = express();
+const port = parseInt(process.env.PORT || '8080');
 
-data = {}
-msg_tracker = {}
-force_join_waiting = {}
-IST = pytz.timezone('Asia/Kolkata')
+app.get('/', (req, res) => {
+  res.send('Mrixdu Security++ Bot is running!');
+});
 
-# -------------------- Helper functions --------------------
-def load_data():
-    global data
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            data = json.load(f)
-    else:
-        data = {}
+app.listen(port, '0.0.0.0', () => {
+  console.log(`🌐 Web server running on port ${port}`);
+});
+// Part 2: Database & Data Management
 
-def save_data():
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+// -------------------- SQLite Database --------------------
+const db = new sqlite3.Database(DB_FILE);
 
-def get_chat_settings(chat_id):
-    chat_id_str = str(chat_id)
-    if chat_id_str not in data:
-        data[chat_id_str] = {
-            "night_mode": False,
-            "night_on": DEFAULT_NIGHT_ON,
-            "night_off": DEFAULT_NIGHT_OFF,
-            "blocked_words": [],
-            "blocked_stickers": [],
-            "banned_sticker_packs": [],
-            "filters": {},
-            "anti_spam": False,
-            "force_subscribe": None,
-            "media_off": False
+db.run(`
+  CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    full_name TEXT
+  )
+`);
+
+function saveUser(user: User): void {
+  if (!user.username) return;
+  db.run(
+    `INSERT OR REPLACE INTO users (user_id, username, full_name) VALUES (?, ?, ?)`,
+    [user.id, user.username.toLowerCase(), `${user.first_name || ''} ${user.last_name || ''}`.trim()]
+  );
+}
+
+function getUserByUsername(username: string): Promise<{ user_id: number; full_name: string } | null> {
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT user_id, full_name FROM users WHERE username = ?',
+      [username.toLowerCase()],
+      (err, row: any) => {
+        if (err) reject(err);
+        resolve(row || null);
+      }
+    );
+  });
+}
+
+// -------------------- Data Management --------------------
+function loadData(): Record<string, ChatSettings> {
+  if (fs.existsSync(DATA_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveData(data: Record<string, ChatSettings>): void {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+let data: Record<string, ChatSettings> = loadData();
+
+function getChatSettings(chatId: number | string): ChatSettings {
+  const chatIdStr = String(chatId);
+  if (!data[chatIdStr]) {
+    data[chatIdStr] = {
+      night_mode: false,
+      night_on: DEFAULT_NIGHT_ON,
+      night_off: DEFAULT_NIGHT_OFF,
+      blocked_words: [],
+      blocked_stickers: [],
+      banned_sticker_packs: [],
+      filters: {},
+      anti_spam: false,
+      force_subscribe: null,
+      media_off: false
+    };
+    saveData(data);
+  }
+  return data[chatIdStr];
+}
+
+function loadHistory(): Record<string, UserHistory> {
+  if (fs.existsSync(HISTORY_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveHistory(data: Record<string, UserHistory>): void {
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
+}
+
+let historyDb: Record<string, UserHistory> = loadHistory();
+
+function loadMembers(): Record<string, number[]> {
+  if (fs.existsSync(MEMBERS_FILE)) {
+    try {
+      return JSON.parse(fs.readFileSync(MEMBERS_FILE, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveMembers(data: Record<string, number[]>): void {
+  fs.writeFileSync(MEMBERS_FILE, JSON.stringify(data, null, 2));
+}
+
+function saveMember(userId: number, chatId: number): void {
+  const members = loadMembers();
+  const chatKey = String(chatId);
+  if (!members[chatKey]) {
+    members[chatKey] = [];
+  }
+  if (!members[chatKey].includes(userId)) {
+    members[chatKey].push(userId);
+    saveMembers(members);
+  }
+}
+
+function getMembers(chatId: number): number[] {
+  const members = loadMembers();
+  return members[String(chatId)] || [];
+}
+// Part 3: Helper Functions
+
+// -------------------- Helper Functions --------------------
+function parseTimeWithAmPm(timeStr: string): string | null {
+  const trimmed = timeStr.trim().toUpperCase();
+  const match = trimmed.match(/(\d{1,2}):(\d{2})(?:\s*([AP]M))?/);
+  if (!match) return null;
+  
+  let hour = parseInt(match[1]);
+  const minute = parseInt(match[2]);
+  const amPm = match[3];
+  
+  if (amPm) {
+    if (amPm === 'PM' && hour !== 12) hour += 12;
+    if (amPm === 'AM' && hour === 12) hour = 0;
+  }
+  
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function isDeleted(user: TelegramBot.User): boolean {
+  if (!user) return true;
+  if (user.first_name === 'Deleted Account') return true;
+  if (!user.first_name && !user.last_name && !user.username) return true;
+  return false;
+}
+
+function getCurrentTime(): string {
+  return moment().tz(IST).format('HH:mm');
+}
+
+function getCurrentTimestamp(): string {
+  return moment().tz(IST).format('YYYY-MM-DD HH:mm:ss');
+}
+
+function getUserDisplayName(user: TelegramBot.User): string {
+  return user.username ? `@${user.username}` : user.first_name || 'Unknown User';
+}
+
+// -------------------- Bot State --------------------
+let msgTracker: MessageTracker = {};
+let forceJoinWaiting: Record<number, ForceJoinWaiting> = {};
+
+// -------------------- Admin Check Functions --------------------
+async function isGroupAdmin(bot: TelegramBot, chatId: number, userId: number): Promise<boolean> {
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    return member.status === 'administrator' || member.status === 'creator';
+  } catch {
+    return false;
+  }
+}
+
+async function isUserInChannel(bot: TelegramBot, userId: number, channelUsername: string): Promise<boolean> {
+  try {
+    const member = await bot.getChatMember(channelUsername, userId);
+    return member.status === 'member' || member.status === 'administrator' || member.status === 'creator';
+  } catch {
+    return false;
+  }
+}
+
+async function muteUser(bot: TelegramBot, chatId: number, userId: number, untilDate: Date): Promise<void> {
+  await bot.restrictChatMember(chatId, userId, {
+    can_send_messages: false
+  });
+}
+
+async function unmuteUser(bot: TelegramBot, chatId: number, userId: number): Promise<void> {
+  await bot.restrictChatMember(chatId, userId, {
+    can_send_messages: true,
+    can_send_media_messages: true,
+    can_send_other_messages: true,
+    can_add_web_page_previews: true
+  });
+}
+
+async function deleteMessageSafe(bot: TelegramBot, chatId: number, messageId: number): Promise<void> {
+  try {
+    await bot.deleteMessage(chatId, messageId);
+  } catch {}
+}
+
+// -------------------- Track User History --------------------
+function trackUserHistory(user: TelegramBot.User): void {
+  const userId = String(user.id);
+  const now = getCurrentTimestamp();
+  const currentName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+  const currentUsername = user.username || 'No username';
+  
+  if (!historyDb[userId]) {
+    historyDb[userId] = { names: [], usernames: [] };
+  }
+  
+  const userData = historyDb[userId];
+  
+  if (!userData.names.length || userData.names[userData.names.length - 1].value !== currentName) {
+    userData.names.push({ value: currentName, date: now });
+  }
+  
+  if (!userData.usernames.length || userData.usernames[userData.usernames.length - 1].value !== currentUsername) {
+    userData.usernames.push({ value: currentUsername, date: now });
+  }
+  
+  saveHistory(historyDb);
+}
+// Part 4: Auto Night Scheduler & Scan Functions
+
+// -------------------- Auto Night Mode Scheduler --------------------
+async function autoNightScheduler(bot: TelegramBot): Promise<void> {
+  while (true) {
+    const currentTime = getCurrentTime();
+    const currentData = loadData();
+    
+    for (const [chatIdStr, settings] of Object.entries(currentData)) {
+      const chatId = parseInt(chatIdStr);
+      const on = settings.night_on || DEFAULT_NIGHT_ON;
+      const off = settings.night_off || DEFAULT_NIGHT_OFF;
+      
+      let should: boolean;
+      if (on <= off) {
+        should = (on <= currentTime && currentTime < off);
+      } else {
+        should = (currentTime >= on || currentTime < off);
+      }
+      
+      if (should && !settings.night_mode) {
+        settings.night_mode = true;
+        saveData(currentData);
+        try {
+          await bot.sendMessage(chatId, '🌙 *Night Mode Enabled* (auto)\nAll non-admin messages will be deleted.', { parse_mode: 'Markdown' });
+        } catch {}
+      } else if (!should && settings.night_mode) {
+        settings.night_mode = false;
+        saveData(currentData);
+        try {
+          await bot.sendMessage(chatId, '☀️ *Night Mode Disabled* (auto)\nMessage deletion turned off.', { parse_mode: 'Markdown' });
+        } catch {}
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 60000));
+  }
+}
+
+// -------------------- Core Scan Function --------------------
+async function doScan(bot: TelegramBot, chatId: number, msg?: TelegramBot.Message): Promise<{
+  scanned: number;
+  deleted: number;
+  failed: number;
+  deletedUsers: string[];
+}> {
+  let deletedCount = 0;
+  let failedCount = 0;
+  let scannedCount = 0;
+  const deletedUsers: string[] = [];
+  
+  let memberIds = getMembers(chatId);
+  
+  try {
+    const admins = await bot.getChatAdministrators(chatId);
+    for (const admin of admins) {
+      if (!memberIds.includes(admin.user.id)) {
+        memberIds.push(admin.user.id);
+        saveMember(admin.user.id, chatId);
+      }
+    }
+  } catch {}
+  
+  const total = memberIds.length;
+  
+  if (msg) {
+    try {
+      await bot.editMessageText(
+        `👥 <b>Found ${total} tracked members</b>\n🔍 Scanning for deleted accounts...`,
+        { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' }
+      );
+    } catch {}
+  }
+  
+  for (const uid of memberIds) {
+    scannedCount++;
+    
+    if (msg && scannedCount % 50 === 0) {
+      try {
+        await bot.editMessageText(
+          `🔍 <b>Scanning...</b>\n👤 Scanned: ${scannedCount}/${total}\n🗑 Deleted found: ${deletedCount}`,
+          { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' }
+        );
+      } catch {}
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, uid);
+      if (isDeleted(member.user)) {
+        try {
+          await bot.banChatMember(chatId, uid);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          await bot.unbanChatMember(chatId, uid);
+          deletedCount++;
+          deletedUsers.push(`• ID: <code>${uid}</code>`);
+        } catch {
+          failedCount++;
         }
-        save_data()
-    return data[chat_id_str]
-
-async def is_group_admin(update: Update, user_id: int) -> bool:
-    chat = update.effective_chat
-    if chat.type not in ["group", "supergroup"]:
-        return False
-    try:
-        member = await chat.get_member(user_id)
-        return member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    except:
-        return False
-
-async def is_user_in_channel(user_id: int, channel_username: str, bot) -> bool:
-    try:
-        chat_member = await bot.get_chat_member(chat_id=channel_username, user_id=user_id)
-        return chat_member.status in (ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    except:
-        return False
-
-async def mute_user(chat_id, user_id, until_date, bot):
-    perms = ChatPermissions(can_send_messages=False)
-    await bot.restrict_chat_member(chat_id, user_id, perms, until_date=until_date)
-
-async def unmute_user(chat_id, user_id, bot):
-    perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
-    await bot.restrict_chat_member(chat_id, user_id, perms)
-
-async def delete_message_safe(message):
-    try:
-        await message.delete()
-    except:
-        pass
-
-def parse_time_with_am_pm(time_str):
-    time_str = time_str.strip().upper()
-    match = re.match(r'(\d{1,2}):(\d{2})(?:\s*([AP]M))?', time_str)
-    if not match:
-        return None
-    hour, minute, am_pm = int(match.group(1)), int(match.group(2)), match.group(3)
-    if am_pm:
-        if am_pm == 'PM' and hour != 12:
-            hour += 12
-        elif am_pm == 'AM' and hour == 12:
-            hour = 0
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        return None
-    return f"{hour:02d}:{minute:02d}"
-
-# -------------------- Auto night mode scheduler --------------------
-async def auto_night_scheduler(bot):
-    while True:
-        now = datetime.now(IST)
-        current_time = now.strftime("%H:%M")
-        for chat_id_str, settings in list(data.items()):
-            chat_id = int(chat_id_str)
-            on = settings.get("night_on", DEFAULT_NIGHT_ON)
-            off = settings.get("night_off", DEFAULT_NIGHT_OFF)
-            if on <= off:
-                should = (on <= current_time < off)
-            else:
-                should = (current_time >= on or current_time < off)
-            if should and not settings.get("night_mode", False):
-                settings["night_mode"] = True
-                save_data()
-                try:
-                    await bot.send_message(chat_id, "🌙 *Night Mode Enabled* (auto)\nAll non-admin messages will be deleted.", parse_mode="Markdown")
-                except:
-                    pass
-            elif not should and settings.get("night_mode", False):
-                settings["night_mode"] = False
-                save_data()
-                try:
-                    await bot.send_message(chat_id, "☀️ *Night Mode Disabled* (auto)\nMessage deletion turned off.", parse_mode="Markdown")
-                except:
-                    pass
-        await asyncio.sleep(60)
-        # -------------------- Command handlers --------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        msg = (
-            "🛡️ **Welcome to MRIXDU Protection Bot**\n\n"
-            "Hey there! 👋\n\n"
-            "I'm MRIXDU Protection Bot — your advanced Telegram group security and management assistant, built to keep your community safe, organized, and spam‑free.\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "⚡ **Features**\n\n"
-            "👮 **User Moderation**\n"
-            "• Kick, Ban & Mute Members\n"
-            "• User Information Lookup\n"
-            "• Admin Management Tools\n"
-            "• Promote / Demote Admins\n\n"
-            "🛡️ **Security Protection**\n"
-            "• Anti‑Spam System\n"
-            "• Media Protection\n"
-            "• Force Subscribe Verification\n"
-            "• Auto Moderation Features\n"
-            "• Deleted Account Cleanup\n\n"
-            "🌙 **Night Mode**\n"
-            "• Automatic Group Lockdown\n"
-            "• Custom Night Schedule\n\n"
-            "🚫 **Filters & Blacklists**\n"
-            "• Word Filtering\n"
-            "• Blacklisted Words Control\n"
-            "• Sticker & Sticker Pack Protection\n"
-            "• Custom Auto-Reply Filters\n\n"
-            "📌 **Utilities**\n"
-            "• Pin Messages\n"
-            "• Admin Mentions\n"
-            "• User History Tracking\n"
-            "• Group Statistics\n\n"
-            "🗑️ **Cleanup Tools**\n"
-            "• Remove Deleted Accounts\n"
-            "• Auto Clean Schedule (24hrs)\n"
-            "• Group Member Tracking\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "📋 **View All Commands**\n"
-            "➜ /commands\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "🌐 **Official Network**\n\n"
-            "👥 Community Group\n"
-            "@BGMIPOPULARITYOG\n\n"
-            "📢 Official Channel\n"
-            "@MAXITEMARKET\n\n"
-            "🌍 Support Group\n"
-            "@MAXITEWORLD\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "💎 **Need Your Own Bot?**\n\n"
-            "Want a clone of this bot, custom features, or a private setup?\n\n"
-            "👑 Owner & Developer\n"
-            "@MRIXDU\n\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "🔒 Stay Safe • Stay Protected\n"
-            "⚙️ Powered by MRIXDU Protection Bot"
-        )
-        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
-    else:
-        await update.message.reply_text("Use /start in private chat to see my commands.")
-
-async def commands_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        text = (
-            "📋 **All Commands**\n\n"
-            "👮 **Moderation Commands**\n"
-            "• `/ban @username` - Ban a user\n"
-            "• `/unban @username` - Unban a user\n"
-            "• `/kick @username` - Kick a user\n"
-            "• `/mute @username` - Mute a user\n"
-            "• `/unmute @username` - Unmute a user\n"
-            "• `/promote @username` - Promote to admin\n"
-            "• `/demote @username` - Demote from admin\n"
-            "• `/info @username` - Get user info\n\n"
-            
-            "🛡️ **Security Commands**\n"
-            "• `/forcesubscribe @channel` - Force channel join\n"
-            "• `/antispamon` - Enable anti-spam\n"
-            "• `/antispamoff` - Disable anti-spam\n"
-            "• `/mediaoff` - Block media from non-admins\n"
-            "• `/mediaon` - Allow media from everyone\n\n"
-            
-            "🌙 **Night Mode**\n"
-            "• `/nighton` - Enable night mode\n"
-            "• `/nightoff` - Disable night mode\n"
-            "• `/setnight HH:MM HH:MM` - Set night schedule\n\n"
-            
-            "🚫 **Filters & Blacklists**\n"
-            "• `/block word` - Block a word\n"
-            "• `/unblock word` - Unblock a word\n"
-            "• `/filter word reply` - Set auto-reply filter\n"
-            "• `/delfilter word` - Remove a filter\n"
-            "• `/blocksticker` - Block a sticker\n"
-            "• `/unblocksticker` - Unblock a sticker\n"
-            "• `/banstickerpack` - Ban a sticker pack\n"
-            "• `/unbanstickerpack` - Unban a sticker pack\n\n"
-            
-            "🗑️ **Cleanup Commands**\n"
-            "• `/stats` - View group statistics\n"
-            "• `/clean` - Remove deleted accounts\n"
-            "• `/autoclean` - Enable auto-clean (24hrs)\n"
-            "• `/disableautoclean` - Disable auto-clean\n\n"
-            
-            "📌 **Utility Commands**\n"
-            "• `/pin` - Pin a message (reply to message)\n"
-            "• `/history @username` - View user history\n"
-            "• `/checkadmin` - Check bot admin status\n"
-            "• `@admin` - Mention all admins\n"
-            "• `/commands` - Show this list"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-        
-async def check_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        bot_member = await update.effective_chat.get_member(context.bot.id)
-        is_admin = bot_member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-        await update.message.reply_text(f"Bot is admin: {is_admin}\nStatus: {bot_member.status}")
-    except Exception as e:
-        await update.message.reply_text(f"Cannot check admin status: {e}")
-
-async def nighton(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Only group admins can use this command.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["night_mode"] = True
-    save_data()
-    await update.message.reply_text("🌙 Night mode enabled. Non-admin messages will be deleted.")
-
-async def nightoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Only group admins can use this command.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["night_mode"] = False
-    save_data()
-    await update.message.reply_text("☀️ Night mode disabled.")
-
-async def setnight(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Only group admins can use this command.")
-        return
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /setnight 01:00 07:00 or /setnight 1:00 PM 7:00 AM")
-        return
-    on_24h = parse_time_with_am_pm(context.args[0])
-    off_24h = parse_time_with_am_pm(context.args[1])
-    if not on_24h or not off_24h:
-        await update.message.reply_text("Invalid time format. Use HH:MM or HH:MM AM/PM")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["night_on"] = on_24h
-    settings["night_off"] = off_24h
-    save_data()
-    await update.message.reply_text(f"✅ Auto night set: ON {on_24h} IST, OFF {off_24h} IST.")
-
-async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_user = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    # Case 2: /ban @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_info = get_user_by_username(username)
-        if not user_info:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-        user_id = user_info[0]
-        try:
-            member = await update.effective_chat.get_member(user_id)
-            target_user = member.user
-        except:
-            await update.message.reply_text(f"User @{username} found in DB but not in group.")
-            return
-    else:
-        await update.message.reply_text("Usage: /ban @username or reply to a user's message with /ban")
-        return
-
-    try:
-        await update.effective_chat.ban_member(target_user.id)
-        await update.message.reply_text(f"✅ Banned {target_user.first_name} (ID: {target_user.id})")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to ban: {e}")
-        
-# ========== unban_user function (correctly placed, not nested) ==========
-async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_id = None
-    # Case 1: reply to a message (the user may be banned, but we can still get their ID)
-    if update.message.reply_to_message:
-        target_id = update.message.reply_to_message.from_user.id
-    # Case 2: /unban @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_info = get_user_by_username(username)
-        if not user_info:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-        target_id = user_info[0]
-    else:
-        await update.message.reply_text("Usage: /unban @username or reply to a banned user's message (if available)")
-        return
-
-    try:
-        await update.effective_chat.unban_member(target_id)
-        await update.message.reply_text(f"✅ Unbanned user ID {target_id}")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to unban: {e}")
-
-async def kick_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_user = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    # Case 2: /kick @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_info = get_user_by_username(username)
-        if not user_info:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-        user_id = user_info[0]
-        try:
-            member = await update.effective_chat.get_member(user_id)
-            target_user = member.user
-        except:
-            await update.message.reply_text(f"User @{username} found in DB but not in group.")
-            return
-    else:
-        await update.message.reply_text("Usage: /kick @username or reply to a user's message with /kick")
-        return
-
-    try:
-        await update.effective_chat.ban_member(target_user.id)
-        await update.effective_chat.unban_member(target_user.id)
-        await update.message.reply_text(f"✅ Kicked {target_user.first_name}")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to kick: {e}")
-        
-async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_user = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    # Case 2: /mute @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_info = get_user_by_username(username)
-        if not user_info:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-        user_id = user_info[0]
-        try:
-            member = await update.effective_chat.get_member(user_id)
-            target_user = member.user
-        except:
-            await update.message.reply_text(f"User @{username} found in DB but not in group.")
-            return
-    else:
-        await update.message.reply_text("Usage: /mute @username or reply to a user's message with /mute")
-        return
-
-    try:
-        perms = ChatPermissions(can_send_messages=False)
-        await update.effective_chat.restrict_member(target_user.id, perms)
-        await update.message.reply_text(f"🔇 Muted {target_user.first_name} (ID: {target_user.id})")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to mute: {e}")
-
-async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_user = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    # Case 2: /unmute @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_info = get_user_by_username(username)
-        if not user_info:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-        user_id = user_info[0]
-        try:
-            member = await update.effective_chat.get_member(user_id)
-            target_user = member.user
-        except:
-            await update.message.reply_text(f"User @{username} found in DB but not in group.")
-            return
-    else:
-        await update.message.reply_text("Usage: /unmute @username or reply to a user's message with /unmute")
-        return
-
-    try:
-        perms = ChatPermissions(can_send_messages=True, can_send_other_messages=True)
-        await update.effective_chat.restrict_member(target_user.id, perms)
-        await update.message.reply_text(f"🔊 Unmuted {target_user.first_name} (ID: {target_user.id})")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to unmute: {e}")
-
-async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    target_user = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    # Case 2: /info @username
-    elif context.args:
-        username = context.args[0].lstrip('@')
-        user_data = get_user_by_username(username)
-        if user_data:
-            user_id, full_name = user_data
-            try:
-                member = await update.effective_chat.get_member(user_id)
-                target_user = member.user
-            except:
-                await update.message.reply_text(f"User @{username} found in DB but not in group.")
-                return
-        else:
-            await update.message.reply_text(f"❌ User @{username} not found in database.\nThey must have spoken in the group after the bot was added.")
-            return
-    else:
-        await update.message.reply_text("Usage: /info @username or reply to a user's message with /info")
-        return
-
-    if not target_user:
-        await update.message.reply_text("Could not identify target user.")
-        return
-
-    user_id = target_user.id
-    full_name = target_user.full_name
-    username = target_user.username or "NoUsername"
-
-    # Get status by checking admin list first (reliable)
-    status_str = "Member"
-    try:
-        admins = await update.effective_chat.get_administrators()
-        for admin in admins:
-            if admin.user.id == user_id:
-                status_str = "Creator" if admin.status == "creator" else "Administrator"
-                break
-        else:
-            # Not an admin – try to get member status (restricted, left, banned)
-            try:
-                member = await update.effective_chat.get_member(user_id)
-                if member.status == "restricted":
-                    status_str = "Restricted"
-                elif member.status == "left":
-                    status_str = "Left"
-                elif member.status == "banned":
-                    status_str = "Banned"
-                else:
-                    status_str = "Member"
-            except:
-                pass
-    except:
-        pass
-
-    msg = (
-        f"👤 **User Info**\n"
-        f"🆔 ID: `{user_id}`\n"
-        f"📛 Name: {full_name}\n"
-        f"👤 Username: @{username}\n"
-        f"🔗 [User link](tg://user?id={user_id})\n"
-        f"📌 Status in group: {status_str}"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
-    # -------------------- Word, Sticker, Filter, Media, Anti-spam --------------------
-async def block_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /block word1 word2 ...")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    words = [w.lower() for w in context.args if w not in settings["blocked_words"]]
-    settings["blocked_words"].extend(words)
-    save_data()
-    await update.message.reply_text(f"🚫 Blocked words: {', '.join(words)}")
-
-async def unblock_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /unblock word1 word2 ...")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    removed = []
-    for w in context.args:
-        wl = w.lower()
-        if wl in settings["blocked_words"]:
-            settings["blocked_words"].remove(wl)
-            removed.append(w)
-    save_data()
-    await update.message.reply_text(f"✅ Unblocked: {', '.join(removed) if removed else 'None'}")
-
-async def block_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
-        await update.message.reply_text("Reply to a sticker to block it.")
-        return
-    sticker_id = update.message.reply_to_message.sticker.file_id
-    settings = get_chat_settings(update.effective_chat.id)
-    if sticker_id not in settings["blocked_stickers"]:
-        settings["blocked_stickers"].append(sticker_id)
-        save_data()
-        await update.message.reply_text("🚫 Sticker blocked.")
-    else:
-        await update.message.reply_text("Sticker already blocked.")
-
-async def unblock_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
-        await update.message.reply_text("Reply to a sticker to unblock it.")
-        return
-    sticker_id = update.message.reply_to_message.sticker.file_id
-    settings = get_chat_settings(update.effective_chat.id)
-    if sticker_id in settings["blocked_stickers"]:
-        settings["blocked_stickers"].remove(sticker_id)
-        save_data()
-        await update.message.reply_text("✅ Sticker unblocked.")
-    else:
-        await update.message.reply_text("Sticker not blocked.")
-
-async def ban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
-        await update.message.reply_text("Reply to a sticker to ban its entire pack.")
-        return
-    sticker = update.message.reply_to_message.sticker
-    pack_name = sticker.set_name
-    if not pack_name:
-        await update.message.reply_text("This sticker does not belong to a pack.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    if pack_name not in settings["banned_sticker_packs"]:
-        settings["banned_sticker_packs"].append(pack_name)
-        save_data()
-        await update.message.reply_text(f"🚫 Sticker pack `{pack_name}` banned. Any sticker from this pack will be deleted.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("This sticker pack is already banned.")
-
-async def unban_sticker_pack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not update.message.reply_to_message or not update.message.reply_to_message.sticker:
-        await update.message.reply_text("Reply to a sticker from the banned pack to unban it.")
-        return
-    sticker = update.message.reply_to_message.sticker
-    pack_name = sticker.set_name
-    if not pack_name:
-        await update.message.reply_text("This sticker does not belong to a pack.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    if pack_name in settings["banned_sticker_packs"]:
-        settings["banned_sticker_packs"].remove(pack_name)
-        save_data()
-        await update.message.reply_text(f"✅ Sticker pack `{pack_name}` unbanned.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("This sticker pack was not banned.")
-
-async def pin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Reply to a message to pin it.")
-        return
-    try:
-        await update.message.reply_to_message.pin()
-        await update.message.reply_text("📌 Message pinned.")
-    except Exception as e:
-        await update.message.reply_text(f"Failed to pin: {e}")
-
-async def filter_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-
-    # Check if the command is a reply to a photo
-    photo_file_id = None
-    if update.message.reply_to_message and update.message.reply_to_message.photo:
-        photo_file_id = update.message.reply_to_message.photo[-1].file_id
-
-    if not context.args:
-        await update.message.reply_text("Usage: /filter word [reply to a photo] or /filter word reply_text")
-        return
-
-    word = context.args[0].lower()
-    settings = get_chat_settings(update.effective_chat.id)
-
-    if photo_file_id:
-        # Store the photo file_id as the filter reply
-        settings["filters"][word] = photo_file_id
-        save_data()
-        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll send that photo.")
-    else:
-        # Store text reply (everything after the word)
-        if len(context.args) < 2:
-            await update.message.reply_text("Usage: /filter word reply_text\nExample: /filter done Hero")
-            return
-        reply = " ".join(context.args[1:])
-        settings["filters"][word] = reply
-        save_data()
-        await update.message.reply_text(f"🔍 Filter added: when someone says '{word}', I'll reply: '{reply}'")
-
-async def delfilter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /delfilter word")
-        return
-    word = context.args[0].lower()
-    settings = get_chat_settings(update.effective_chat.id)
-    if word in settings["filters"]:
-        del settings["filters"][word]
-        save_data()
-        await update.message.reply_text(f"✅ Filter removed for: {word}")
-    else:
-        await update.message.reply_text("Filter not found.")
-
-async def antispam_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["anti_spam"] = True
-    save_data()
-    await update.message.reply_text("🛡️ Anti-spam enabled.")
-
-async def antispam_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["anti_spam"] = False
-    save_data()
-    await update.message.reply_text("✅ Anti-spam disabled.")
-
-async def media_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["media_off"] = True
-    save_data()
-    await update.message.reply_text("📵 Media will be deleted for non-admins.")
-
-async def media_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    settings = get_chat_settings(update.effective_chat.id)
-    settings["media_off"] = False
-    save_data()
-    await update.message.reply_text("✅ Media allowed for everyone.")
-
-async def admin_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    text = update.message.text
-    if text and "@admin" in text.lower():
-        chat = update.effective_chat
-        
-        # Only works in groups/supergroups
-        if chat.type not in ["group", "supergroup"]:
-            await update.message.reply_text("This command only works in groups!")
-            return
-        
-        try:
-            # Fetch all admins using the bot instance
-            admins = await context.bot.get_chat_administrators(chat.id)
-            
-            # Build mention list (skip bots)
-            mentions = []
-            for admin in admins:
-                user = admin.user
-                if not user.is_bot:
-                    if user.username:
-                        mentions.append(f"@{user.username}")
-                    else:
-                        mentions.append(f'<a href="tg://user?id={user.id}">{user.first_name}</a>')
-            
-            if mentions:
-                await update.message.reply_text(
-                    f"🚨 Admins notified:\n{' '.join(mentions)}",
-                    parse_mode="HTML"
-                )
-            else:
-                await update.message.reply_text("No non‑bot admins found.")
-                
-        except Exception as e:
-            await update.message.reply_text(
-                f"❌ Error: {e}\nMake sure I am an admin and the group is a supergroup."
-            )
-# ==================== FORCESUBSCRIBE (must be at the same level as admin_mention, NOT inside it) ====================
-async def forcesubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, update.effective_user.id):
-        await update.message.reply_text("⚠️ Admins only.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /forcesubscribe @channelusername\nTo remove: /forcesubscribe off")
-        return
-    channel = context.args[0]
-    chat_id = update.effective_chat.id
-    settings = get_chat_settings(chat_id)
-    if channel.lower() == "off":
-        settings["force_subscribe"] = None
-        save_data()
-        await update.message.reply_text("Force subscribe removed.")
-        return
-    if not channel.startswith("@"):
-        await update.message.reply_text("Channel must start with @")
-        return
-    settings["force_subscribe"] = channel
-    save_data()
-    await update.message.reply_text(f"✅ Users must join {channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.")
-
-async def force_subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    info = force_join_waiting.get(user.id)
-    if not info:
-        await query.edit_message_text("Verification expired. Please rejoin the group or contact an admin.")
-        return
-    chat_id = info["chat_id"]
-    channel = info["channel"]
-    if await is_user_in_channel(user.id, channel, context.bot):
-        await unmute_user(chat_id, user.id, context.bot)
-        await query.edit_message_text("✅ Verification successful! You may now chat in the group.")
-        await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has verified and can now talk.")
-        force_join_waiting.pop(user.id, None)
-    else:
-        # Only popup alert – no extra message in the group
-        await query.answer("❌ You haven't joined the channel yet. Please join first, then click again.", show_alert=True)
-
-# ==================== PROMOTE / DEMOTE ====================
-async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Promote a user to admin in the group."""
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
-        return
-
-    # Must reply to a message OR provide @username
-    target_user = None
-
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    elif context.args:
-        username = context.args[0].replace("@", "")
-        try:
-            chat_member = await context.bot.get_chat_member(chat.id, f"@{username}")
-            target_user = chat_member.user
-        except Exception:
-            await update.message.reply_text("❌ User not found! They must be in the group.")
-            return
-    else:
-        await update.message.reply_text("❌ Usage: /promote @username or reply to a user.")
-        return
-
-    # Check if user is already an admin
-    try:
-        member = await chat.get_member(target_user.id)
-        if member.status in ["administrator", "creator"]:
-            await update.message.reply_text(f"⚠️ {target_user.first_name} is already an admin!")
-            return
-    except:
-        pass
-
-    try:
-        await context.bot.promote_chat_member(
-            chat_id=chat.id,
-            user_id=target_user.id,
-            can_manage_chat=True,
-            can_delete_messages=True,
-            can_restrict_members=True,
-            can_invite_users=True,
-            can_pin_messages=True,
-            can_manage_video_chats=True,
-        )
-
-        name = target_user.username and f"@{target_user.username}" or target_user.first_name
-        await update.message.reply_text(
-            f"✅ <b>{name}</b> has been promoted to Admin!\n"
-            f"👤 Promoted by: @{caller.username or caller.first_name}",
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to promote: \nCan Promote Members only")
-
-async def demote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Demote a user from admin in the group."""
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
-        return
-
-    target_user = None
-
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-    elif context.args:
-        username = context.args[0].replace("@", "")
-        try:
-            chat_member = await context.bot.get_chat_member(chat.id, f"@{username}")
-            target_user = chat_member.user
-        except Exception:
-            await update.message.reply_text("❌ User not found! They must be in the group.")
-            return
-    else:
-        await update.message.reply_text("❌ Usage: /demote @username or reply to a user.")
-        return
-
-    # Check if user is the creator (cannot demote creator)
-    try:
-        member = await chat.get_member(target_user.id)
-        if member.status == "creator":
-            await update.message.reply_text("⚠️ Cannot demote the group creator!")
-            return
-        if member.status not in ["administrator"]:
-            await update.message.reply_text(f"⚠️ {target_user.first_name} is not an admin!")
-            return
-    except:
-        pass
-
-    try:
-        # Remove all admin permissions = demote
-        await context.bot.promote_chat_member(
-            chat_id=chat.id,
-            user_id=target_user.id,
-            can_manage_chat=False,
-            can_delete_messages=False,
-            can_restrict_members=False,
-            can_invite_users=False,
-            can_pin_messages=False,
-            can_manage_video_chats=False,
-        )
-
-        name = target_user.username and f"@{target_user.username}" or target_user.first_name
-        await update.message.reply_text(
-            f"⬇️ <b>{name}</b> has been demoted from Admin!\n"
-            f"👤 Demoted by: @{caller.username or caller.first_name}",
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to demote: \nCan promote or demote members only")
-
-# ==================== USER HISTORY TRACKING ====================
-HISTORY_FILE = "user_history.json"
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_history(data):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-history_db = load_history()
-
-async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Track every message sender automatically (name & username changes)."""
-    user = update.effective_user
-    if not user:
-        return
-
-    user_id = str(user.id)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    current_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    current_username = user.username or "No username"
-
-    if user_id not in history_db:
-        history_db[user_id] = {
-            "names": [],
-            "usernames": []
+      }
+    } catch {
+      try {
+        await bot.banChatMember(chatId, uid);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await bot.unbanChatMember(chatId, uid);
+        deletedCount++;
+        deletedUsers.push(`• ID: <code>${uid}</code>`);
+      } catch {
+        failedCount++;
+      }
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  
+  return { scanned: scannedCount, deleted: deletedCount, failed: failedCount, deletedUsers };
+}
+
+// -------------------- Auto Clean Job --------------------
+async function autoCleanJob(bot: TelegramBot, chatId: number): Promise<void> {
+  try {
+    const { deleted } = await doScan(bot, chatId);
+    if (deleted > 0) {
+      await bot.sendMessage(
+        chatId,
+        `🤖 <b>Auto Clean Complete!</b>\n🗑 Removed <b>${deleted}</b> deleted accounts.\n🕐 <b>Time:</b> ${getCurrentTimestamp()} IST\n⚡ Powered by MRIXDU BOT`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } catch (error) {
+    console.error('Auto clean error:', error);
+  }
+}
+// Part 5: Command Handlers (Part 1) - Start through Mute commands
+
+// -------------------- Command Handlers --------------------
+// /start
+function startCommand(bot: TelegramBot) {
+  bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (msg.chat.type === 'private') {
+      const text = 
+        '🛡️ **Welcome to MRIXDU Protection Bot**\n\n' +
+        'Hey there! 👋\n\n' +
+        "I'm MRIXDU Protection Bot — your advanced Telegram group security and management assistant, built to keep your community safe, organized, and spam‑free.\n\n" +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '⚡ **Features**\n\n' +
+        '👮 **User Moderation**\n' +
+        '• Kick, Ban & Mute Members\n' +
+        '• User Information Lookup\n' +
+        '• Admin Management Tools\n' +
+        '• Promote / Demote Admins\n\n' +
+        '🛡️ **Security Protection**\n' +
+        '• Anti‑Spam System\n' +
+        '• Media Protection\n' +
+        '• Force Subscribe Verification\n' +
+        '• Auto Moderation Features\n' +
+        '• Deleted Account Cleanup\n\n' +
+        '🌙 **Night Mode**\n' +
+        '• Automatic Group Lockdown\n' +
+        '• Custom Night Schedule\n\n' +
+        '🚫 **Filters & Blacklists**\n' +
+        '• Word Filtering\n' +
+        '• Blacklisted Words Control\n' +
+        '• Sticker & Sticker Pack Protection\n' +
+        '• Custom Auto-Reply Filters\n\n' +
+        '📌 **Utilities**\n' +
+        '• Pin Messages\n' +
+        '• Admin Mentions\n' +
+        '• User History Tracking\n' +
+        '• Group Statistics\n\n' +
+        '🗑️ **Cleanup Tools**\n' +
+        '• Remove Deleted Accounts\n' +
+        '• Auto Clean Schedule (24hrs)\n' +
+        '• Group Member Tracking\n\n' +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '📋 **View All Commands**\n' +
+        '➜ /commands\n\n' +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '🌐 **Official Network**\n\n' +
+        '👥 Community Group\n' +
+        '@BGMIPOPULARITYOG\n\n' +
+        '📢 Official Channel\n' +
+        '@MAXITEMARKET\n\n' +
+        '🌍 Support Group\n' +
+        '@MAXITEWORLD\n\n' +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '💎 **Need Your Own Bot?**\n\n' +
+        'Want a clone of this bot, custom features, or a private setup?\n\n' +
+        '👑 Owner & Developer\n' +
+        '@MRIXDU\n\n' +
+        '━━━━━━━━━━━━━━━━━━\n\n' +
+        '🔒 Stay Safe • Stay Protected\n' +
+        '⚙️ Powered by MRIXDU Protection Bot';
+      
+      await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    } else {
+      await bot.sendMessage(chatId, 'Use /start in private chat to see my commands.');
+    }
+  });
+}
+
+// /commands
+function commandsListCommand(bot: TelegramBot) {
+  bot.onText(/\/commands/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (msg.chat.type === 'private') {
+      const text =
+        '📋 **All Commands**\n\n' +
+        '👮 **Moderation Commands**\n' +
+        '• `/ban @username` - Ban a user\n' +
+        '• `/unban @username` - Unban a user\n' +
+        '• `/kick @username` - Kick a user\n' +
+        '• `/mute @username` - Mute a user\n' +
+        '• `/unmute @username` - Unmute a user\n' +
+        '• `/promote @username` - Promote to admin\n' +
+        '• `/demote @username` - Demote from admin\n' +
+        '• `/info @username` - Get user info\n\n' +
+        '🛡️ **Security Commands**\n' +
+        '• `/forcesubscribe @channel` - Force channel join\n' +
+        '• `/antispamon` - Enable anti-spam\n' +
+        '• `/antispamoff` - Disable anti-spam\n' +
+        '• `/mediaoff` - Block media from non-admins\n' +
+        '• `/mediaon` - Allow media from everyone\n\n' +
+        '🌙 **Night Mode**\n' +
+        '• `/nighton` - Enable night mode\n' +
+        '• `/nightoff` - Disable night mode\n' +
+        '• `/setnight HH:MM HH:MM` - Set night schedule\n\n' +
+        '🚫 **Filters & Blacklists**\n' +
+        '• `/block word` - Block a word\n' +
+        '• `/unblock word` - Unblock a word\n' +
+        '• `/filter word reply` - Set auto-reply filter\n' +
+        '• `/delfilter word` - Remove a filter\n' +
+        '• `/blocksticker` - Block a sticker\n' +
+        '• `/unblocksticker` - Unblock a sticker\n' +
+        '• `/banstickerpack` - Ban a sticker pack\n' +
+        '• `/unbanstickerpack` - Unban a sticker pack\n\n' +
+        '🗑️ **Cleanup Commands**\n' +
+        '• `/stats` - View group statistics\n' +
+        '• `/clean` - Remove deleted accounts\n' +
+        '• `/autoclean` - Enable auto-clean (24hrs)\n' +
+        '• `/disableautoclean` - Disable auto-clean\n\n' +
+        '📌 **Utility Commands**\n' +
+        '• `/pin` - Pin a message (reply to message)\n' +
+        '• `/history @username` - View user history\n' +
+        '• `/checkadmin` - Check bot admin status\n' +
+        '• `@admin` - Mention all admins\n' +
+        '• `/commands` - Show this list';
+      
+      await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    }
+  });
+}
+
+// /checkadmin
+function checkAdminCommand(bot: TelegramBot) {
+  bot.onText(/\/checkadmin/, async (msg) => {
+    const chatId = msg.chat.id;
+    const botInfo = await bot.getMe();
+    
+    try {
+      const botMember = await bot.getChatMember(chatId, botInfo.id);
+      const isAdmin = botMember.status === 'administrator' || botMember.status === 'creator';
+      await bot.sendMessage(chatId, `Bot is admin: ${isAdmin}\nStatus: ${botMember.status}`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Cannot check admin status: ${error.message}`);
+    }
+  });
+}
+
+// Night Mode Commands
+function nightModeCommands(bot: TelegramBot) {
+  // /nighton
+  bot.onText(/\/nighton/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.night_mode = true;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '🌙 Night mode enabled. Non-admin messages will be deleted.');
+  });
+
+  // /nightoff
+  bot.onText(/\/nightoff/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.night_mode = false;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '☀️ Night mode disabled.');
+  });
+
+  // /setnight
+  bot.onText(/\/setnight (.+) (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+      return;
+    }
+    
+    const onTime = parseTimeWithAmPm(match[1]);
+    const offTime = parseTimeWithAmPm(match[2]);
+    
+    if (!onTime || !offTime) {
+      await bot.sendMessage(chatId, 'Invalid time format. Use HH:MM or HH:MM AM/PM');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.night_on = onTime;
+    settings.night_off = offTime;
+    saveData(loadData());
+    await bot.sendMessage(chatId, `✅ Auto night set: ON ${onTime} IST, OFF ${offTime} IST.`);
+  });
+}
+
+// Ban/Unban/Kick/Mute/Unmute Commands
+function moderationCommands(bot: TelegramBot) {
+  // /ban
+  bot.onText(/\/ban(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (!userInfo) {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.\nThey must have spoken in the group after the bot was added.`);
+        return;
+      }
+      try {
+        const member = await bot.getChatMember(chatId, userInfo.user_id);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, `User @${username} found in DB but not in group.`);
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /ban @username or reply to a user\'s message with /ban');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      await bot.banChatMember(chatId, targetUser.id);
+      await bot.sendMessage(chatId, `✅ Banned ${targetUser.first_name} (ID: ${targetUser.id})`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to ban: ${error.message}`);
+    }
+  });
+
+  // /unban
+  bot.onText(/\/unban(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetId: number | null = null;
+    
+    if (msg.reply_to_message) {
+      targetId = msg.reply_to_message.from?.id || null;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (!userInfo) {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.`);
+        return;
+      }
+      targetId = userInfo.user_id;
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /unban @username or reply to a banned user\'s message');
+      return;
+    }
+    
+    if (!targetId) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      await bot.unbanChatMember(chatId, targetId);
+      await bot.sendMessage(chatId, `✅ Unbanned user ID ${targetId}`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to unban: ${error.message}`);
+    }
+  });
+
+  // /kick
+  bot.onText(/\/kick(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (!userInfo) {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.`);
+        return;
+      }
+      try {
+        const member = await bot.getChatMember(chatId, userInfo.user_id);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, `User @${username} found in DB but not in group.`);
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /kick @username or reply to a user\'s message with /kick');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      await bot.banChatMember(chatId, targetUser.id);
+      await bot.unbanChatMember(chatId, targetUser.id);
+      await bot.sendMessage(chatId, `✅ Kicked ${targetUser.first_name}`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to kick: ${error.message}`);
+    }
+  });
+
+  // /mute
+  bot.onText(/\/mute(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (!userInfo) {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.`);
+        return;
+      }
+      try {
+        const member = await bot.getChatMember(chatId, userInfo.user_id);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, `User @${username} found in DB but not in group.`);
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /mute @username or reply to a user\'s message with /mute');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      await bot.restrictChatMember(chatId, targetUser.id, {
+        can_send_messages: false
+      });
+      await bot.sendMessage(chatId, `🔇 Muted ${targetUser.first_name} (ID: ${targetUser.id})`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to mute: ${error.message}`);
+    }
+  });
+
+  // /unmute
+  bot.onText(/\/unmute(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (!userInfo) {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.`);
+        return;
+      }
+      try {
+        const member = await bot.getChatMember(chatId, userInfo.user_id);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, `User @${username} found in DB but not in group.`);
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /unmute @username or reply to a user\'s message with /unmute');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      await bot.restrictChatMember(chatId, targetUser.id, {
+        can_send_messages: true,
+        can_send_media_messages: true,
+        can_send_other_messages: true,
+        can_add_web_page_previews: true
+      });
+      await bot.sendMessage(chatId, `🔊 Unmuted ${targetUser.first_name} (ID: ${targetUser.id})`);
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to unmute: ${error.message}`);
+    }
+  });
+}
+// Part 6: Command Handlers (Part 2) - Info through Clean commands
+
+// /info
+function infoCommand(bot: TelegramBot) {
+  bot.onText(/\/info(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      const userInfo = await getUserByUsername(username);
+      if (userInfo) {
+        try {
+          const member = await bot.getChatMember(chatId, userInfo.user_id);
+          targetUser = member.user;
+        } catch {
+          await bot.sendMessage(chatId, `User @${username} found in DB but not in group.`);
+          return;
         }
+      } else {
+        await bot.sendMessage(chatId, `❌ User @${username} not found in database.`);
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /info @username or reply to a user\'s message with /info');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    let statusStr = 'Member';
+    try {
+      const admins = await bot.getChatAdministrators(chatId);
+      const isAdmin = admins.some(a => a.user.id === targetUser.id);
+      if (isAdmin) {
+        const admin = admins.find(a => a.user.id === targetUser.id);
+        statusStr = admin?.status === 'creator' ? 'Creator' : 'Administrator';
+      } else {
+        try {
+          const member = await bot.getChatMember(chatId, targetUser.id);
+          if (member.status === 'restricted') statusStr = 'Restricted';
+          else if (member.status === 'left') statusStr = 'Left';
+          else if (member.status === 'kicked') statusStr = 'Banned';
+          else statusStr = 'Member';
+        } catch {}
+      }
+    } catch {}
+    
+    const msgText =
+      `👤 **User Info**\n` +
+      `🆔 ID: \`${targetUser.id}\`\n` +
+      `📛 Name: ${targetUser.first_name}${targetUser.last_name ? ` ${targetUser.last_name}` : ''}\n` +
+      `👤 Username: @${targetUser.username || 'NoUsername'}\n` +
+      `🔗 [User link](tg://user?id=${targetUser.id})\n` +
+      `📌 Status in group: ${statusStr}`;
+    
+    await bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown', disable_web_page_preview: true });
+  });
+}
 
-    user_data = history_db[user_id]
+// Word, Sticker, Filter Commands
+function filterCommands(bot: TelegramBot) {
+  // /block
+  bot.onText(/\/block (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const words = match[1].split(/\s+/);
+    const settings = getChatSettings(chatId);
+    const newWords = words.filter(w => !settings.blocked_words.includes(w.toLowerCase()));
+    settings.blocked_words.push(...newWords.map(w => w.toLowerCase()));
+    saveData(loadData());
+    await bot.sendMessage(chatId, `🚫 Blocked words: ${newWords.join(', ')}`);
+  });
 
-    # Track name changes
-    if not user_data["names"] or user_data["names"][-1]["value"] != current_name:
-        user_data["names"].append({"value": current_name, "date": now})
+  // /unblock
+  bot.onText(/\/unblock (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const words = match[1].split(/\s+/);
+    const settings = getChatSettings(chatId);
+    const removed: string[] = [];
+    for (const w of words) {
+      const wl = w.toLowerCase();
+      const index = settings.blocked_words.indexOf(wl);
+      if (index !== -1) {
+        settings.blocked_words.splice(index, 1);
+        removed.push(w);
+      }
+    }
+    saveData(loadData());
+    await bot.sendMessage(chatId, `✅ Unblocked: ${removed.length ? removed.join(', ') : 'None'}`);
+  });
 
-    # Track username changes
-    if not user_data["usernames"] or user_data["usernames"][-1]["value"] != current_username:
-        user_data["usernames"].append({"value": current_username, "date": now})
+  // /blocksticker
+  bot.onText(/\/blocksticker/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    if (!msg.reply_to_message || !msg.reply_to_message.sticker) {
+      await bot.sendMessage(chatId, 'Reply to a sticker to block it.');
+      return;
+    }
+    
+    const stickerId = msg.reply_to_message.sticker.file_id;
+    const settings = getChatSettings(chatId);
+    if (!settings.blocked_stickers.includes(stickerId)) {
+      settings.blocked_stickers.push(stickerId);
+      saveData(loadData());
+      await bot.sendMessage(chatId, '🚫 Sticker blocked.');
+    } else {
+      await bot.sendMessage(chatId, 'Sticker already blocked.');
+    }
+  });
 
-    save_history(history_db)
+  // /unblocksticker
+  bot.onText(/\/unblocksticker/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    if (!msg.reply_to_message || !msg.reply_to_message.sticker) {
+      await bot.sendMessage(chatId, 'Reply to a sticker to unblock it.');
+      return;
+    }
+    
+    const stickerId = msg.reply_to_message.sticker.file_id;
+    const settings = getChatSettings(chatId);
+    const index = settings.blocked_stickers.indexOf(stickerId);
+    if (index !== -1) {
+      settings.blocked_stickers.splice(index, 1);
+      saveData(loadData());
+      await bot.sendMessage(chatId, '✅ Sticker unblocked.');
+    } else {
+      await bot.sendMessage(chatId, 'Sticker not blocked.');
+    }
+  });
 
-async def send_history(update: Update, user_id: str, data: dict, target_user: any = None):
-    """Format and send history message."""
-    names = data.get("names", [])
-    usernames = data.get("usernames", [])
+  // /banstickerpack
+  bot.onText(/\/banstickerpack/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    if (!msg.reply_to_message || !msg.reply_to_message.sticker) {
+      await bot.sendMessage(chatId, 'Reply to a sticker to ban its entire pack.');
+      return;
+    }
+    
+    const packName = msg.reply_to_message.sticker.set_name;
+    if (!packName) {
+      await bot.sendMessage(chatId, 'This sticker does not belong to a pack.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    if (!settings.banned_sticker_packs.includes(packName)) {
+      settings.banned_sticker_packs.push(packName);
+      saveData(loadData());
+      await bot.sendMessage(chatId, `🚫 Sticker pack \`${packName}\` banned.`, { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, 'This sticker pack is already banned.');
+    }
+  });
 
-    # Get current username if available
-    current_username = "N/A"
-    if target_user and target_user.username:
-        current_username = f"@{target_user.username}"
-    elif usernames:
-        current_username = f"@{usernames[-1]['value']}"
+  // /unbanstickerpack
+  bot.onText(/\/unbanstickerpack/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    if (!msg.reply_to_message || !msg.reply_to_message.sticker) {
+      await bot.sendMessage(chatId, 'Reply to a sticker from the banned pack to unban it.');
+      return;
+    }
+    
+    const packName = msg.reply_to_message.sticker.set_name;
+    if (!packName) {
+      await bot.sendMessage(chatId, 'This sticker does not belong to a pack.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    const index = settings.banned_sticker_packs.indexOf(packName);
+    if (index !== -1) {
+      settings.banned_sticker_packs.splice(index, 1);
+      saveData(loadData());
+      await bot.sendMessage(chatId, `✅ Sticker pack \`${packName}\` unbanned.`, { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, 'This sticker pack was not banned.');
+    }
+  });
 
-    text = f"📋 <b>History for</b> {current_username}\n"
-    text += f"🆔 <code>{user_id}</code>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━\n"
+  // /pin
+  bot.onText(/\/pin/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    if (!msg.reply_to_message) {
+      await bot.sendMessage(chatId, 'Reply to a message to pin it.');
+      return;
+    }
+    
+    try {
+      await bot.pinChatMessage(chatId, msg.reply_to_message.message_id);
+      await bot.sendMessage(chatId, '📌 Message pinned.');
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `Failed to pin: ${error.message}`);
+    }
+  });
 
-    # Name history
-    text += f"\n👤 <b>Name History ({len(names)} records):</b>\n"
-    if names:
-        for i, entry in enumerate(reversed(names[-10:]), 1):
-            text += f"  {i}. <b>{entry['value']}</b>\n"
-            text += f"      🕐 {entry['date']}\n"
-    else:
-        text += "  No name history found.\n"
+  // /filter
+  bot.onText(/\/filter (\w+)(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const word = match[1].toLowerCase();
+    const settings = getChatSettings(chatId);
+    
+    let photoFileId: string | null = null;
+    if (msg.reply_to_message?.photo) {
+      photoFileId = msg.reply_to_message.photo[msg.reply_to_message.photo.length - 1].file_id;
+    }
+    
+    if (photoFileId) {
+      settings.filters[word] = photoFileId;
+      saveData(loadData());
+      await bot.sendMessage(chatId, `🔍 Filter added: when someone says '${word}', I'll send that photo.`);
+    } else if (match[2]) {
+      const reply = match[2];
+      settings.filters[word] = reply;
+      saveData(loadData());
+      await bot.sendMessage(chatId, `🔍 Filter added: when someone says '${word}', I'll reply: '${reply}'`);
+    } else {
+      await bot.sendMessage(chatId, 'Usage: /filter word reply_text\nExample: /filter done Hero');
+    }
+  });
 
-    # Username history
-    text += f"\n🔖 <b>Username History ({len(usernames)} records):</b>\n"
-    if usernames:
-        for i, entry in enumerate(reversed(usernames[-10:]), 1):
-            text += f"  {i}. <b>@{entry['value']}</b>\n"
-            text += f"      🕐 {entry['date']}\n"
-    else:
-        text += "  No username history found.\n"
+  // /delfilter
+  bot.onText(/\/delfilter (\w+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const word = match[1].toLowerCase();
+    const settings = getChatSettings(chatId);
+    
+    if (settings.filters[word]) {
+      delete settings.filters[word];
+      saveData(loadData());
+      await bot.sendMessage(chatId, `✅ Filter removed for: ${word}`);
+    } else {
+      await bot.sendMessage(chatId, 'Filter not found.');
+    }
+  });
+}
 
-    text += "\n━━━━━━━━━━━━━━━━━━━━"
-    text += "\n⚡ Powered by MRIXDU BOT"
+// Anti-Spam & Media Commands
+function securityCommands(bot: TelegramBot) {
+  // /antispamon
+  bot.onText(/\/antispamon/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.anti_spam = true;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '🛡️ Anti-spam enabled.');
+  });
 
-    await update.message.reply_text(text, parse_mode="HTML")
+  // /antispamoff
+  bot.onText(/\/antispamoff/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.anti_spam = false;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '✅ Anti-spam disabled.');
+  });
 
-async def track_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Track every message sender automatically (name & username changes)."""
-    user = update.effective_user
-    if not user:
-        return
+  // /mediaoff
+  bot.onText(/\/mediaoff/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.media_off = true;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '📵 Media will be deleted for non-admins.');
+  });
 
-    print(f"📝 Tracking message from {user.id}")  # Debug log
+  // /mediaon
+  bot.onText(/\/mediaon/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    settings.media_off = false;
+    saveData(loadData());
+    await bot.sendMessage(chatId, '✅ Media allowed for everyone.');
+  });
+}
 
-    user_id = str(user.id)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+// /forcesubscribe
+function forceSubscribeCommand(bot: TelegramBot) {
+  bot.onText(/\/forcesubscribe (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    const channel = match[1];
+    const settings = getChatSettings(chatId);
+    
+    if (channel.toLowerCase() === 'off') {
+      settings.force_subscribe = null;
+      saveData(loadData());
+      await bot.sendMessage(chatId, 'Force subscribe removed.');
+      return;
+    }
+    
+    if (!channel.startsWith('@')) {
+      await bot.sendMessage(chatId, 'Channel must start with @');
+      return;
+    }
+    
+    settings.force_subscribe = channel;
+    saveData(loadData());
+    await bot.sendMessage(chatId, `✅ Users must join ${channel} before talking.\nNew users will be muted and receive a verification message.\nMake sure I am admin in the channel to verify membership.`);
+  });
+}
 
-    current_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    current_username = user.username or "No username"
+// Promote/Demote Commands
+function promoteDemoteCommands(bot: TelegramBot) {
+  // /promote
+  bot.onText(/\/promote(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      try {
+        const member = await bot.getChatMember(chatId, `@${username}`);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, '❌ User not found! They must be in the group.');
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, '❌ Usage: /promote @username or reply to a user.');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, targetUser.id);
+      if (member.status === 'administrator' || member.status === 'creator') {
+        await bot.sendMessage(chatId, `⚠️ ${targetUser.first_name} is already an admin!`);
+        return;
+      }
+    } catch {}
+    
+    try {
+      await bot.promoteChatMember(chatId, targetUser.id, {
+        can_manage_chat: true,
+        can_delete_messages: true,
+        can_restrict_members: true,
+        can_invite_users: true,
+        can_pin_messages: true,
+        can_manage_video_chats: true
+      });
+      
+      const name = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+      await bot.sendMessage(chatId, `✅ <b>${name}</b> has been promoted to Admin!`, { parse_mode: 'HTML' });
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `❌ Failed to promote: ${error.message}`);
+    }
+  });
 
-    if user_id not in history_db:
-        history_db[user_id] = {
-            "names": [],
-            "usernames": []
+  // /demote
+  bot.onText(/\/demote(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    const botInfo = await bot.getMe();
+    
+    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+      await bot.sendMessage(chatId, '⚠️ Admins only.');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+    } else if (match && match[1]) {
+      const username = match[1];
+      try {
+        const member = await bot.getChatMember(chatId, `@${username}`);
+        targetUser = member.user;
+      } catch {
+        await bot.sendMessage(chatId, '❌ User not found! They must be in the group.');
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, '❌ Usage: /demote @username or reply to a user.');
+      return;
+    }
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, 'Could not identify target user.');
+      return;
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, targetUser.id);
+      if (member.status === 'creator') {
+        await bot.sendMessage(chatId, '⚠️ Cannot demote the group creator!');
+        return;
+      }
+      if (member.status !== 'administrator') {
+        await bot.sendMessage(chatId, `⚠️ ${targetUser.first_name} is not an admin!`);
+        return;
+      }
+    } catch {}
+    
+    try {
+      await bot.promoteChatMember(chatId, targetUser.id, {
+        can_manage_chat: false,
+        can_delete_messages: false,
+        can_restrict_members: false,
+        can_invite_users: false,
+        can_pin_messages: false,
+        can_manage_video_chats: false
+      });
+      
+      const name = targetUser.username ? `@${targetUser.username}` : targetUser.first_name;
+      await bot.sendMessage(chatId, `⬇️ <b>${name}</b> has been demoted from Admin!`, { parse_mode: 'HTML' });
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `❌ Failed to demote: ${error.message}`);
+    }
+  });
+}
+// Part 7: History, Cleanup, Message Handlers & Main
+
+// /history
+function historyCommand(bot: TelegramBot) {
+  bot.onText(/\/history(?:\s+@(\w+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+      await bot.sendMessage(chatId, '❌ This command only works in groups!');
+      return;
+    }
+    
+    let targetUser: TelegramBot.User | null = null;
+    let userId: string | null = null;
+    
+    if (msg.reply_to_message) {
+      targetUser = msg.reply_to_message.from;
+      if (targetUser) userId = String(targetUser.id);
+    } else if (match && match[1]) {
+      const username = match[1].toLowerCase();
+      for (const [uid, data] of Object.entries(historyDb)) {
+        if (data.usernames.length) {
+          const lastUsername = data.usernames[data.usernames.length - 1].value.toLowerCase().replace('@', '');
+          if (lastUsername === username) {
+            userId = uid;
+            try {
+              const member = await bot.getChatMember(chatId, parseInt(uid));
+              targetUser = member.user;
+            } catch {}
+            break;
+          }
         }
-
-    user_data = history_db[user_id]
-
-    # Track name changes
-    if not user_data["names"] or user_data["names"][-1]["value"] != current_name:
-        user_data["names"].append({"value": current_name, "date": now})
-        print(f"  ✅ New name: {current_name}")
-
-    # Track username changes
-    if not user_data["usernames"] or user_data["usernames"][-1]["value"] != current_username:
-        user_data["usernames"].append({"value": current_username, "date": now})
-        print(f"  ✅ New username: {current_username}")
-
-    save_history(history_db)
-
-async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show name/username history for a user."""
-    chat = update.effective_chat
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
-        return
-
-    # Get target user
-    target_user = None
-    user_id = None
-
-    # Case 1: reply to a message
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-        user_id = str(target_user.id)
-        if user_id in history_db:
-            await send_history(update, user_id, history_db[user_id], target_user)
-        else:
-            await update.message.reply_text("❌ No history found! User must send a message first.")
-        return
-
-    # Case 2: /history @username
-    elif context.args:
-        username = context.args[0].replace("@", "").lower()
-        # Search in history db by username
-        found = False
-        for uid, data in history_db.items():
-            if data.get("usernames"):
-                last_username = data["usernames"][-1]["value"].lower().replace("@", "")
-                if last_username == username:
-                    # Try to get current user info from group
-                    try:
-                        member = await chat.get_member(int(uid))
-                        target_user = member.user
-                    except:
-                        target_user = None
-                    await send_history(update, uid, data, target_user)
-                    found = True
-                    break
-        if not found:
-            await update.message.reply_text("❌ User not found in history! They must have sent a message first.")
-        return
-
-    else:
-        await update.message.reply_text("❌ Usage: /history @username or reply to a user.")
-    return
-
-# ─────────────────────────────────────────
-# JSON STORAGE
-# ─────────────────────────────────────────
-MEMBERS_FILE = "members.json"
-
-def load_members():
-    if os.path.exists(MEMBERS_FILE):
-        with open(MEMBERS_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_members(data):
-    with open(MEMBERS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def save_member(user_id, chat_id):
-    data = load_members()
-    chat_key = str(chat_id)
-    if chat_key not in data:
-        data[chat_key] = []
-    if user_id not in data[chat_key]:
-        data[chat_key].append(user_id)
-    save_members(data)
-
-def get_members(chat_id):
-    data = load_members()
-    return data.get(str(chat_id), [])
-
-
-# ─────────────────────────────────────────
-# TRACK MEMBERS
-# ─────────────────────────────────────────
-async def track_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    if chat and user and chat.type in ["group", "supergroup"]:
-        save_member(user.id, chat.id)
-    if update.message and update.message.new_chat_members:
-        for new_user in update.message.new_chat_members:
-            save_member(new_user.id, chat.id)
-
-
-# ─────────────────────────────────────────
-# CHECK DELETED ACCOUNT
-# ─────────────────────────────────────────
-def is_deleted(user):
-    if user is None:
-        return True
-    if getattr(user, 'first_name', '') == "Deleted Account":
-        return True
-    if (not getattr(user, 'first_name', '')
-            and not getattr(user, 'last_name', '')
-            and not getattr(user, 'username', '')):
-        return True
-    return False
-
-
-# ─────────────────────────────────────────
-# CORE SCAN
-# ─────────────────────────────────────────
-async def do_scan(bot, chat_id, msg=None):
-    deleted_count = 0
-    failed_count = 0
-    scanned_count = 0
-    deleted_users = []
-
-    member_ids = get_members(chat_id)
-
-    try:
-        admins = await bot.get_chat_administrators(chat_id)
-        for admin in admins:
-            if admin.user.id not in member_ids:
-                member_ids.append(admin.user.id)
-                save_member(admin.user.id, chat_id)
-    except Exception:
-        pass
-
-    total = len(member_ids)
-
-    if msg:
-        try:
-            await msg.edit_text(
-                f"👥 <b>Found {total} tracked members</b>\n"
-                f"🔍 Scanning for deleted accounts...",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
-    for uid in member_ids:
-        scanned_count += 1
-
-        if msg and scanned_count % 50 == 0:
-            try:
-                await msg.edit_text(
-                    f"🔍 <b>Scanning...</b>\n"
-                    f"👤 Scanned: {scanned_count}/{total}\n"
-                    f"🗑 Deleted found: {deleted_count}",
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
-
-        try:
-            member = await bot.get_chat_member(chat_id, uid)
-            user = member.user
-            if is_deleted(user):
-                try:
-                    await bot.ban_chat_member(chat_id, uid)
-                    await asyncio.sleep(0.5)
-                    await bot.unban_chat_member(chat_id, uid)
-                    deleted_count += 1
-                    deleted_users.append(f"• ID: <code>{uid}</code>")
-                except TelegramError:
-                    failed_count += 1
-        except TelegramError:
-            try:
-                await bot.ban_chat_member(chat_id, uid)
-                await asyncio.sleep(0.3)
-                await bot.unban_chat_member(chat_id, uid)
-                deleted_count += 1
-                deleted_users.append(f"• ID: <code>{uid}</code>")
-            except Exception:
-                failed_count += 1
-
-        await asyncio.sleep(0.05)
-
-    return scanned_count, deleted_count, failed_count, deleted_users
-
-
-# ─────────────────────────────────────────
-# /stats
-# ─────────────────────────────────────────
-async def clean_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
-        return
-
-    try:
-        total = await context.bot.get_chat_member_count(chat.id)
-        tracked = len(get_members(chat.id))
-        text = (
-            f"📊 <b>Group Statistics</b>\n\n"
-            f"👥 <b>Group:</b> {chat.title}\n"
-            f"🆔 <b>Chat ID:</b> <code>{chat.id}</code>\n"
-            f"👤 <b>Total Members:</b> {total}\n"
-            f"🔍 <b>Tracked Members:</b> {tracked}\n"
-            f"🕐 <b>Checked at:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n\n"
-            f"Run /clean to remove deleted accounts!"
-        )
-        await update.message.reply_text(text, parse_mode="HTML")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-
-# ─────────────────────────────────────────
-# /clean
-# ─────────────────────────────────────────
-async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command only works in groups!")
-        return
-
-    try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
-        if caller_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("❌ Only admins can use this command!")
-            return
-    except Exception:
-        await update.message.reply_text("❌ Cannot verify admin status!")
-        return
-
-    msg = await update.message.reply_text(
-        "🔍 <b>Fetching tracked members...</b>\n"
-        "⏳ Please wait!",
-        parse_mode="HTML"
-    )
-
-    try:
-        scanned, deleted, failed, deleted_users = await do_scan(
-            context.bot, chat.id, msg
-        )
-    except Exception as e:
-        await msg.edit_text(
-            f"❌ <b>Error:</b> {e}\n\n"
-            f"Make sure:\n"
-            f"1. Bot is admin with Ban Users permission\n"
-            f"2. This is a supergroup",
-            parse_mode="HTML"
-        )
-        return
-
-    result = (
-        f"✅ <b>Scan Complete!</b>\n\n"
-        f"👥 <b>Total Scanned:</b> {scanned}\n"
-        f"🗑 <b>Deleted Removed:</b> {deleted}\n"
-        f"⚠️ <b>Failed:</b> {failed}\n"
-        f"🕐 <b>Time:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n"
-    )
-
-    if deleted_users:
-        result += "\n<b>Removed IDs:</b>\n" + "\n".join(deleted_users[:20])
-        if len(deleted_users) > 20:
-            result += f"\n... and {len(deleted_users) - 20} more"
-
-    if deleted == 0:
-        result += "\n\n🎉 <b>Group is clean! No deleted accounts found.</b>"
-
-    result += "\n\n⚡ <b>Powered by MRIXDU BOT</b>"
-    await msg.edit_text(result, parse_mode="HTML")
-
-
-# ─────────────────────────────────────────
-# AUTO CLEAN JOB
-# ─────────────────────────────────────────
-async def auto_clean_job(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
-    try:
-        _, deleted, _, _ = await do_scan(context.bot, chat_id)
-        if deleted > 0:
-            await context.bot.send_message(
-                chat_id,
-                f"🤖 <b>Auto Clean Complete!</b>\n"
-                f"🗑 Removed <b>{deleted}</b> deleted accounts.\n"
-                f"🕐 <b>Time:</b> {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST\n"
-                f"⚡ Powered by MRIXDU BOT",
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        print(f"Auto clean error: {e}")
-
-
-# ─────────────────────────────────────────
-# /autoclean
-# ─────────────────────────────────────────
-async def enable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Groups only!")
-        return
-
-    try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
-        if caller_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("❌ Only admins can use this command!")
-            return
-    except Exception:
-        await update.message.reply_text("❌ Cannot verify admin status!")
-        return
-
-    if context.job_queue is None:
-        await update.message.reply_text(
-            "❌ <b>Job queue not available!</b>\n"
-            "<code>pip install python-telegram-bot[job-queue]</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    for job in context.job_queue.get_jobs_by_name(str(chat.id)):
-        job.schedule_removal()
-
-    context.job_queue.run_repeating(
-        auto_clean_job,
-        interval=86400,
-        first=10,
-        chat_id=chat.id,
-        name=str(chat.id)
-    )
-
-    await update.message.reply_text(
-        f"✅ <b>Auto Clean Enabled!</b>\n"
-        f"🕐 Scans every <b>24 hours</b> automatically!\n"
-        f"🇮🇳 Time zone: <b>IST (India)</b>\n\n"
-        f"⚡ Powered by MRIXDU BOT",
-        parse_mode="HTML"
-    )
-
-
-# ─────────────────────────────────────────
-# /stopclean
-# ─────────────────────────────────────────
-async def disable_auto_clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    caller = update.effective_user
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Groups only!")
-        return
-
-    try:
-        caller_member = await context.bot.get_chat_member(chat.id, caller.id)
-        if caller_member.status not in ["administrator", "creator"]:
-            await update.message.reply_text("❌ Only admins can use this command!")
-            return
-    except Exception:
-        await update.message.reply_text("❌ Cannot verify admin status!")
-        return
-
-    if context.job_queue is None:
-        await update.message.reply_text("❌ Job queue not available!")
-        return
-
-    jobs = context.job_queue.get_jobs_by_name(str(chat.id))
-    if jobs:
-        for job in jobs:
-            job.schedule_removal()
-        await update.message.reply_text(
-            "🛑 <b>Auto Clean Disabled!</b>\n\n"
-            "⚡ Powered by MRIXDU BOT",
-            parse_mode="HTML"
-        )
-    else:
-        await update.message.reply_text("⚠️ Auto clean was not enabled!")
-
-async def guard_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    save_user(update.effective_user)
-    chat = update.effective_chat
-    user = update.effective_user
-    if chat.type not in ["group", "supergroup"]:
-        return
-    if user.id == context.bot.id:
-        return
-    chat_id = chat.id
-    user_id = user.id
-    settings = get_chat_settings(chat_id)
-
-    if settings.get("night_mode", False) and not await is_group_admin(update, user_id):
-        await delete_message_safe(update.message)
-        return
-
-    # Force subscribe (mute non‑subscribed users)
-    if not await is_group_admin(update, user_id):
-        channel = settings.get("force_subscribe")
-        if channel:
-            if not await is_user_in_channel(user_id, channel, context.bot):
-                try:
-                    await mute_user(chat_id, user_id, datetime.now() + timedelta(days=365), context.bot)
-                except:
-                    pass
-                await delete_message_safe(update.message)
-                if user_id not in force_join_waiting:
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📢 Subscribe to channel", url=f"https://t.me/{channel[1:]}")],
-                        [InlineKeyboardButton("✅ I subscribed", callback_data="check_subscribe")]
-                    ])
-                    sent = await context.bot.send_message(chat_id, f"@{user.username or user.first_name}, you must join {channel} to talk here.\n\nAfter joining, click the button below to verify:", reply_markup=keyboard)
-                    force_join_waiting[user_id] = {"chat_id": chat_id, "channel": channel, "message_id": sent.message_id}
-                return
-
-    # Auto-unmute if user has joined the channel (no button click needed)
-    if not await is_group_admin(update, user_id):
-        channel = settings.get("force_subscribe")
-        if channel and await is_user_in_channel(user_id, channel, context.bot):
-            try:
-                member = await chat.get_member(user_id)
-                if member.status == ChatMember.RESTRICTED and not member.can_send_messages:
-                    await unmute_user(chat_id, user_id, context.bot)
-                    await context.bot.send_message(chat_id, f"@{user.username or user.first_name} has joined {channel} and has been unmuted automatically.")
-            except:
-                pass
-
-    if settings.get("media_off", False) and not await is_group_admin(update, user_id):
-        if update.message.photo or update.message.video or update.message.document or update.message.audio:
-            await delete_message_safe(update.message)
-            return
-
-    if update.message.sticker:
-        if update.message.sticker.file_id in settings.get("blocked_stickers", []):
-            await delete_message_safe(update.message)
-            return
-        pack_name = update.message.sticker.set_name
-        if pack_name and pack_name in settings.get("banned_sticker_packs", []):
-            await delete_message_safe(update.message)
-            return
-
-    text = update.message.text or update.message.caption or ""
-    text_lower = text.lower()
-    if any(word in text_lower for word in settings.get("blocked_words", [])):
-        await delete_message_safe(update.message)
-        return
-
-    # Check filters (auto‑reply, supports photos)
-    for word, stored in settings.get("filters", {}).items():
-        if word in text_lower.split():
-            if isinstance(stored, str) and (stored.startswith("AgAC") or stored.startswith("BQAC") or stored.startswith("CAAC")):
-                try:
-                    await update.message.reply_photo(stored)
-                except:
-                    await update.message.reply_text("Error sending photo.")
-            else:
-                await update.message.reply_text(stored)
-            await delete_message_safe(update.message)
-            break
-
-    if settings.get("anti_spam", False) and not await is_group_admin(update, user_id):
-        key = (chat_id, user_id)
-        now_ts = datetime.now().timestamp()
-        if key not in msg_tracker:
-            msg_tracker[key] = []
-        msg_tracker[key] = [t for t in msg_tracker[key] if now_ts - t < SPAM_WINDOW]
-        msg_tracker[key].append(now_ts)
-        if len(msg_tracker[key]) > SPAM_MAX_MSGS:
-            until = datetime.now() + timedelta(seconds=MUTE_DURATION)
-            await mute_user(chat_id, user_id, until, context.bot)
-            await context.bot.send_message(chat_id, f"🚫 {user.mention_html()} has been muted for 5 minutes (spam).", parse_mode="HTML")
-            await delete_message_safe(update.message)
-            msg_tracker[key] = []
-            return
-
-async def post_init(app):
-    load_data()
-    asyncio.create_task(auto_night_scheduler(app.bot))
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.post_init = post_init
-    app.add_handler(MessageHandler(filters.ALL, track_user), group=-1)
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("commands", commands_list))
-    app.add_handler(CommandHandler("checkadmin", check_admin))
-    app.add_handler(CommandHandler("nighton", nighton))
-    app.add_handler(CommandHandler("nightoff", nightoff))
-    app.add_handler(CommandHandler("setnight", setnight))
-    app.add_handler(CommandHandler("ban", ban_user))
-    app.add_handler(CommandHandler("unban", unban_user))
-    app.add_handler(CommandHandler("kick", kick_user))
-    app.add_handler(CommandHandler("mute", mute_command))
-    app.add_handler(CommandHandler("unmute", unmute_command))
-    app.add_handler(CommandHandler("block", block_word))
-    app.add_handler(CommandHandler("unblock", unblock_word))
-    app.add_handler(CommandHandler("blocksticker", block_sticker))
-    app.add_handler(CommandHandler("unblocksticker", unblock_sticker))
-    app.add_handler(CommandHandler("banstickerpack", ban_sticker_pack))
-    app.add_handler(CommandHandler("unbanstickerpack", unban_sticker_pack))
-    app.add_handler(CommandHandler("pin", pin_message))
-    app.add_handler(CommandHandler("filter", filter_word))
-    app.add_handler(CommandHandler("delfilter", delfilter))
-    app.add_handler(CommandHandler("antispamon", antispam_on))
-    app.add_handler(CommandHandler("antispamoff", antispam_off))
-    app.add_handler(CommandHandler("info", user_info))
-    app.add_handler(CommandHandler("forcesubscribe", forcesubscribe))
-    app.add_handler(CommandHandler("mediaoff", media_off))
-    app.add_handler(CommandHandler("mediaon", media_on))
-    app.add_handler(CallbackQueryHandler(force_subscribe_callback, pattern="check_subscribe"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_mention), group=0)
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, guard_message), group=1)
-    app.add_handler(CommandHandler("promote", promote_user))
-    app.add_handler(CommandHandler("demote", demote_user))
-    app.add_handler(CommandHandler("history", history_command))
-    app.add_handler(CommandHandler("stats", clean_stats))
-    app.add_handler(CommandHandler("clean", clean_command))
-    app.add_handler(CommandHandler("autoclean", enable_auto_clean))
-    app.add_handler(CommandHandler("disableautoclean", disable_auto_clean))
-    print("🛡️ MRIXDU Protection Bot is running...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"FATAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+      }
+      if (!userId) {
+        await bot.sendMessage(chatId, '❌ User not found in history! They must have sent a message first.');
+        return;
+      }
+    } else {
+      await bot.sendMessage(chatId, '❌ Usage: /history @username or reply to a user.');
+      return;
+    }
+    
+    if (!userId || !historyDb[userId]) {
+      await bot.sendMessage(chatId, '❌ No history found! User must send a message first.');
+      return;
+    }
+    
+    const data = historyDb[userId];
+    const names = data.names || [];
+    const usernames = data.usernames || [];
+    
+    let currentUsername = 'N/A';
+    if (targetUser?.username) {
+      currentUsername = `@${targetUser.username}`;
+    } else if (usernames.length) {
+      currentUsername = `@${usernames[usernames.length - 1].value}`;
+    }
+    
+    let text = `📋 <b>History for</b> ${currentUsername}\n`;
+    text += `🆔 <code>${userId}</code>\n`;
+    text += '━━━━━━━━━━━━━━━━━━━━\n';
+    
+    text += `\n👤 <b>Name History (${names.length} records):</b>\n`;
+    if (names.length) {
+      const recentNames = names.slice(-10).reverse();
+      for (let i = 0; i < recentNames.length; i++) {
+        text += `  ${i + 1}. <b>${recentNames[i].value}</b>\n`;
+        text += `      🕐 ${recentNames[i].date}\n`;
+      }
+    } else {
+      text += '  No name history found.\n';
+    }
+    
+    text += `\n🔖 <b>Username History (${usernames.length} records):</b>\n`;
+    if (usernames.length) {
+      const recentUsernames = usernames.slice(-10).reverse();
+      for (let i = 0; i < recentUsernames.length; i++) {
+        text += `  ${i + 1}. <b>@${recentUsernames[i].value}</b>\n`;
+        text += `      🕐 ${recentUsernames[i].date}\n`;
+      }
+    } else {
+      text += '  No username history found.\n';
+    }
+    
+    text += '\n━━━━━━━━━━━━━━━━━━━━\n';
+    text += '⚡ Powered by MRIXDU BOT';
+    
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  });
+}
+
+// /stats
+function statsCommand(bot: TelegramBot) {
+  bot.onText(/\/stats/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+      await bot.sendMessage(chatId, '❌ This command only works in groups!');
+      return;
+    }
+    
+    try {
+      const total = await bot.getChatMemberCount(chatId);
+      const tracked = getMembers(chatId).length;
+      const text =
+        `📊 <b>Group Statistics</b>\n\n` +
+        `👥 <b>Group:</b> ${msg.chat.title}\n` +
+        `🆔 <b>Chat ID:</b> <code>${chatId}</code>\n` +
+        `👤 <b>Total Members:</b> ${total}\n` +
+        `🔍 <b>Tracked Members:</b> ${tracked}\n` +
+        `🕐 <b>Checked at:</b> ${getCurrentTimestamp()} IST\n\n` +
+        `Run /clean to remove deleted accounts!`;
+      await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    } catch (error: any) {
+      await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
+    }
+  });
+}
+
+// /clean
+function cleanCommand(bot: TelegramBot) {
+  bot.onText(/\/clean/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+      await bot.sendMessage(chatId, '❌ This command only works in groups!');
+      return;
+    }
+    
+    if (!userId) {
+      await bot.sendMessage(chatId, '❌ Could not identify user.');
+      return;
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, userId);
+      if (member.status !== 'administrator' && member.status !== 'creator') {
+        await bot.sendMessage(chatId, '❌ Only admins can use this command!');
+        return;
+      }
+    } catch {
+      await bot.sendMessage(chatId, '❌ Cannot verify admin status!');
+      return;
+    }
+    
+    const sentMsg = await bot.sendMessage(chatId, '🔍 <b>Fetching tracked members...</b>\n⏳ Please wait!', { parse_mode: 'HTML' });
+    
+    try {
+      const { scanned, deleted, failed, deletedUsers } = await doScan(bot, chatId, sentMsg);
+      
+      let result =
+        `✅ <b>Scan Complete!</b>\n\n` +
+        `👥 <b>Total Scanned:</b> ${scanned}\n` +
+        `🗑 <b>Deleted Removed:</b> ${deleted}\n` +
+        `⚠️ <b>Failed:</b> ${failed}\n` +
+        `🕐 <b>Time:</b> ${getCurrentTimestamp()} IST\n`;
+      
+      if (deletedUsers.length) {
+        result += '\n<b>Removed IDs:</b>\n' + deletedUsers.slice(0, 20).join('\n');
+        if (deletedUsers.length > 20) {
+          result += `\n... and ${deletedUsers.length - 20} more`;
+        }
+      }
+      
+      if (deleted === 0) {
+        result += '\n\n🎉 <b>Group is clean! No deleted accounts found.</b>';
+      }
+      
+      result += '\n\n⚡ <b>Powered by MRIXDU BOT</b>';
+      
+      await bot.editMessageText(result, {
+        chat_id: chatId,
+        message_id: sentMsg.message_id,
+        parse_mode: 'HTML'
+      });
+    } catch (error: any) {
+      await bot.editMessageText(
+        `❌ <b>Error:</b> ${error.message}\n\nMake sure:\n1. Bot is admin with Ban Users permission\n2. This is a supergroup`,
+        { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'HTML' }
+      );
+    }
+  });
+}
+
+// /autoclean & /disableautoclean
+let autoCleanIntervals: Record<string, NodeJS.Timeout> = {};
+
+function autoCleanCommands(bot: TelegramBot) {
+  // /autoclean
+  bot.onText(/\/autoclean/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+      await bot.sendMessage(chatId, '❌ Groups only!');
+      return;
+    }
+    
+    if (!userId) {
+      await bot.sendMessage(chatId, '❌ Could not identify user.');
+      return;
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, userId);
+      if (member.status !== 'administrator' && member.status !== 'creator') {
+        await bot.sendMessage(chatId, '❌ Only admins can use this command!');
+        return;
+      }
+    } catch {
+      await bot.sendMessage(chatId, '❌ Cannot verify admin status!');
+      return;
+    }
+    
+    const jobKey = `auto_clean_${chatId}`;
+    if (autoCleanIntervals[jobKey]) {
+      clearInterval(autoCleanIntervals[jobKey]);
+      delete autoCleanIntervals[jobKey];
+    }
+    
+    autoCleanIntervals[jobKey] = setInterval(() => {
+      autoCleanJob(bot, chatId);
+    }, 86400000); // 24 hours
+    
+    await bot.sendMessage(
+      chatId,
+      `✅ <b>Auto Clean Enabled!</b>\n🕐 Scans every <b>24 hours</b> automatically!\n🇮🇳 Time zone: <b>IST (India)</b>\n\n⚡ Powered by MRIXDU BOT`,
+      { parse_mode: 'HTML' }
+    );
+  });
+
+  // /disableautoclean
+  bot.onText(/\/disableautoclean/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+      await bot.sendMessage(chatId, '❌ Groups only!');
+      return;
+    }
+    
+    if (!userId) {
+      await bot.sendMessage(chatId, '❌ Could not identify user.');
+      return;
+    }
+    
+    try {
+      const member = await bot.getChatMember(chatId, userId);
+      if (member.status !== 'administrator' && member.status !== 'creator') {
+        await bot.sendMessage(chatId, '❌ Only admins can use this command!');
+        return;
+      }
+    } catch {
+      await bot.sendMessage(chatId, '❌ Cannot verify admin status!');
+      return;
+    }
+    
+    const jobKey = `auto_clean_${chatId}`;
+    if (autoCleanIntervals[jobKey]) {
+      clearInterval(autoCleanIntervals[jobKey]);
+      delete autoCleanIntervals[jobKey];
+      await bot.sendMessage(chatId, '🛑 <b>Auto Clean Disabled!</b>\n\n⚡ Powered by MRIXDU BOT', { parse_mode: 'HTML' });
+    } else {
+      await bot.sendMessage(chatId, '⚠️ Auto clean was not enabled!');
+    }
+  });
+}
+
+// -------------------- Callback Query Handler --------------------
+function callbackHandler(bot: TelegramBot) {
+  bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message?.chat.id;
+    const userId = callbackQuery.from.id;
+    const messageId = callbackQuery.message?.message_id;
+    
+    if (!chatId || !messageId) {
+      await bot.answerCallbackQuery(callbackQuery.id, { text: 'Error processing request.' });
+      return;
+    }
+    
+    if (callbackQuery.data === 'check_subscribe') {
+      await bot.answerCallbackQuery(callbackQuery.id);
+      
+      const info = forceJoinWaiting[userId];
+      if (!info) {
+        await bot.editMessageText('Verification expired. Please rejoin the group or contact an admin.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        return;
+      }
+      
+      const isSubscribed = await isUserInChannel(bot, userId, info.channel);
+      if (isSubscribed) {
+        await unmuteUser(bot, info.chat_id, userId);
+        await bot.editMessageText('✅ Verification successful! You may now chat in the group.', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        await bot.sendMessage(info.chat_id, `${getUserDisplayName(callbackQuery.from)} has verified and can now talk.`);
+        delete forceJoinWaiting[userId];
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, {
+          text: '❌ You haven\'t joined the channel yet. Please join first, then click again.',
+          show_alert: true
+        });
+      }
+    }
+  });
+}
+
+// -------------------- Message Handler (Guard) --------------------
+function messageHandler(bot: TelegramBot) {
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    if (!user) return;
+    
+    // Track user
+    saveUser(user);
+    trackUserHistory(user);
+    
+    // Track members
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+      saveMember(user.id, chatId);
+      if (msg.new_chat_members) {
+        for (const newUser of msg.new_chat_members) {
+          saveMember(newUser.id, chatId);
+        }
+      }
+    }
+    
+    // Skip if not in group
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+    const botInfo = await bot.getMe();
+    if (user.id === botInfo.id) return;
+    
+    const settings = getChatSettings(chatId);
+    const isAdmin = await isGroupAdmin(bot, chatId, user.id);
+    
+    // Night mode
+    if (settings.night_mode && !isAdmin) {
+      try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+      return;
+    }
+    
+    // Force subscribe
+    if (!isAdmin) {
+      const channel = settings.force_subscribe;
+      if (channel) {
+        const isSubscribed = await isUserInChannel(bot, user.id, channel);
+        if (!isSubscribed) {
+          try {
+            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+          } catch {}
+          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+          
+          if (!forceJoinWaiting[user.id]) {
+            const sent = await bot.sendMessage(chatId, `@${user.username || user.first_name}, you must join ${channel} to talk here.\n\nAfter joining, click the button below to verify:`, {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '📢 Subscribe to channel', url: `https://t.me/${channel.slice(1)}` }],
+                  [{ text: '✅ I subscribed', callback_data: 'check_subscribe' }]
+                ]
+              }
+            });
+            forceJoinWaiting[user.id] = { chat_id: chatId, channel, message_id: sent.message_id };
+          }
+          return;
+        }
+      }
+    }
+    
+    // Auto-unmute if subscribed
+    if (!isAdmin) {
+      const channel = settings.force_subscribe;
+      if (channel && await isUserInChannel(bot, user.id, channel)) {
+        try {
+          const member = await bot.getChatMember(chatId, user.id);
+          if (member.status === 'restricted' && !member.can_send_messages) {
+            await unmuteUser(bot, chatId, user.id);
+            await bot.sendMessage(chatId, `@${user.username || user.first_name} has joined ${channel} and has been unmuted automatically.`);
+          }
+        } catch {}
+      }
+    }
+    
+    // Media off
+    if (settings.media_off && !isAdmin) {
+      if (msg.photo || msg.video || msg.document || msg.audio) {
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        return;
+      }
+    }
+    
+    // Blocked stickers
+    if (msg.sticker) {
+      if (settings.blocked_stickers.includes(msg.sticker.file_id)) {
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        return;
+      }
+      const packName = msg.sticker.set_name;
+      if (packName && settings.banned_sticker_packs.includes(packName)) {
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        return;
+      }
+    }
+    
+    // Blocked words
+    const text = msg.text || msg.caption || '';
+    const textLower = text.toLowerCase();
+    for (const word of settings.blocked_words) {
+      if (textLower.includes(word)) {
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        return;
+      }
+    }
+    
+    // Filters
+    for (const [word, stored] of Object.entries(settings.filters)) {
+      if (textLower.split(' ').includes(word)) {
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        if (stored.match(/^[A-Za-z0-9_-]{20,}$/)) {
+          try { await bot.sendPhoto(chatId, stored); } catch {}
+        } else {
+          await bot.sendMessage(chatId, stored);
+        }
+        break;
+      }
+    }
+    
+    // Anti-spam
+    if (settings.anti_spam && !isAdmin) {
+      const key = `${chatId}_${user.id}`;
+      const nowTs = Date.now();
+      if (!msgTracker[key]) msgTracker[key] = [];
+      msgTracker[key] = msgTracker[key].filter(t => nowTs - t < SPAM_WINDOW * 1000);
+      msgTracker[key].push(nowTs);
+      if (msgTracker[key].length > SPAM_MAX_MSGS) {
+        const until = new Date(Date.now() + MUTE_DURATION * 1000);
+        await muteUser(bot, chatId, user.id, until);
+        await bot.sendMessage(
+          chatId,
+          `🚫 ${user.first_name} has been muted for 5 minutes (spam).`,
+          { parse_mode: 'HTML' }
+        );
+        try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+        msgTracker[key] = [];
+        return;
+      }
+    }
+  });
+}
+
+// -------------------- Admin Mention Handler --------------------
+function adminMentionHandler(bot: TelegramBot) {
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text || '';
+    
+    if (text.toLowerCase().includes('@admin')) {
+      if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+        await bot.sendMessage(chatId, 'This command only works in groups!');
+        return;
+      }
+      
+      try {
+        const admins = await bot.getChatAdministrators(chatId);
+        const mentions: string[] = [];
+        for (const admin of admins) {
+          const user = admin.user;
+          if (!user.is_bot) {
+            if (user.username) {
+              mentions.push(`@${user.username}`);
+            } else {
+              mentions.push(`<a href="tg://user?id=${user.id}">${user.first_name}</a>`);
+            }
+          }
+        }
+        
+        if (mentions.length) {
+          await bot.sendMessage(chatId, `🚨 Admins notified:\n${mentions.join(' ')}`, { parse_mode: 'HTML' });
+        } else {
+          await bot.sendMessage(chatId, 'No non‑bot admins found.');
+        }
+      } catch (error: any) {
+        await bot.sendMessage(chatId, `❌ Error: ${error.message}\nMake sure I am an admin and the group is a supergroup.`);
+      }
+    }
+  });
+}
+
+// -------------------- Main Function --------------------
+async function main(): Promise<void> {
+  try {
+    const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+    
+    console.log('🛡️ MRIXDU Protection Bot is running...');
+    
+    // Register all command handlers
+    startCommand(bot);
+    commandsListCommand(bot);
+    checkAdminCommand(bot);
+    nightModeCommands(bot);
+    moderationCommands(bot);
+    infoCommand(bot);
+    filterCommands(bot);
+    securityCommands(bot);
+    forceSubscribeCommand(bot);
+    promoteDemoteCommands(bot);
+    historyCommand(bot);
+    statsCommand(bot);
+    cleanCommand(bot);
+    autoCleanCommands(bot);
+    
+    // Register handlers
+    callbackHandler(bot);
+    messageHandler(bot);
+    adminMentionHandler(bot);
+    
+    // Start auto night scheduler
+    autoNightScheduler(bot);
+    
+  } catch (error) {
+    console.error('FATAL ERROR:', error);
+    process.exit(1);
+  }
+}
+
+// -------------------- Start --------------------
+main();
+
+export { bot };
