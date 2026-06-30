@@ -1,5 +1,0 @@
-python-telegram-bot==22.7
-Flask
-pytz
-python-telegram-bot[job-queue]
-telethon
