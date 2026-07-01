@@ -1573,7 +1573,8 @@ function callbackHandler(bot: TelegramBot) {
   });
 }
 
-// -------------------- Message Handler (Guard) --------------------
+                        
+      // -------------------- Message Handler (Guard) --------------------
 function messageHandler(bot: TelegramBot) {
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -1609,67 +1610,65 @@ function messageHandler(bot: TelegramBot) {
       return;
     }
     
-    // Force subscribe - With Proper Buttons (Exact Style from Screenshot)
-if (!isAdmin) {
-    const channel = settings.force_subscribe;
-    if (channel) {
+    // Force subscribe - WITH PROPER BUTTONS
+    if (!isAdmin) {
+      const channel = settings.force_subscribe;
+      if (channel) {
         const isSubscribed = await isUserInChannel(bot, user.id, channel);
         if (!isSubscribed) {
-            try {
-                await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-            } catch {}
-            try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+          try {
+            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+          } catch {}
+          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+          
+          if (!forceJoinWaiting[user.id]) {
+            let messageText = `@${user.username || user.first_name}, to be accepted in the group, please subscribe to our channel. Once joined, click the button below.`;
+            const buttons = [];
             
-            if (!forceJoinWaiting[user.id]) {
-                let messageText = `@${user.username || user.first_name}, to be accepted in the group, please subscribe to our channel. Once joined, click the button below.`;
-                const buttons = [];
-                
-                // Check if it's a private channel (starts with -100)
-                if (channel.startsWith('-100')) {
-                    // Private channel - show info button instead
-                    buttons.push([{ 
-                        text: 'ℹ️ Contact Admin for Invite', 
-                        callback_data: 'private_channel_info' 
-                    }]);
-                } else {
-                    // Public channel - works with @username
-                    const cleanChannel = channel.startsWith('@') ? channel.substring(1) : channel;
-                    buttons.push([{ 
-                        text: '📢 Subscribe to Channel', 
-                        url: `https://t.me/${cleanChannel}` 
-                    }]);
-                }
-                
-                // Second row: Verification button (styled like "OK | I subscribed")
-                buttons.push([{ 
-                    text: '✅ OK | I Subscribed', 
-                    callback_data: 'check_subscribe' 
-                }]);
-                
-                try {
-                    const sent = await bot.sendMessage(chatId, messageText, {
-                        reply_markup: {
-                            inline_keyboard: buttons
-                        }
-                    });
-                    forceJoinWaiting[user.id] = { 
-                        chat_id: chatId, 
-                        channel: channel, 
-                        message_id: sent.message_id 
-                    };
-                } catch (error) {
-                    console.error('Failed to send force subscribe message:', error);
-                    // Fallback: send a simple message without buttons
-                    await bot.sendMessage(chatId, 
-                        `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
-                        `After joining, type /verify to confirm.`
-                    );
-                }
+            // Check if it's a private channel (starts with -100)
+            if (channel.startsWith('-100')) {
+              buttons.push([{ 
+                text: 'ℹ️ Contact Admin for Invite', 
+                callback_data: 'private_channel_info' 
+              }]);
+            } else {
+              // Public channel - works with @username
+              const cleanChannel = channel.startsWith('@') ? channel.substring(1) : channel;
+              buttons.push([{ 
+                text: '📢 Subscribe to Channel', 
+                url: `https://t.me/${cleanChannel}` 
+              }]);
             }
-            return;
+            
+            // Second row: Verification button
+            buttons.push([{ 
+              text: '✅ OK | I Subscribed', 
+              callback_data: 'check_subscribe' 
+            }]);
+            
+            try {
+              const sent = await bot.sendMessage(chatId, messageText, {
+                reply_markup: {
+                  inline_keyboard: buttons
+                }
+              });
+              forceJoinWaiting[user.id] = { 
+                chat_id: chatId, 
+                channel: channel, 
+                message_id: sent.message_id 
+              };
+            } catch (error) {
+              console.error('Failed to send force subscribe message:', error);
+              await bot.sendMessage(chatId, 
+                `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
+                `After joining, type /verify to confirm.`
+              );
+            }
+          }
+          return;
         }
+      }
     }
-}
     
     // Auto-unmute if subscribed
     if (!isAdmin) {
@@ -1749,8 +1748,8 @@ if (!isAdmin) {
         return;
       }
     }
-  });
-      }
+  }); // <-- This closes the bot.on('message')
+} // <-- This closes the messageHandler function
 
 // -------------------- Security Commands (Anti-Spam) --------------------
 function securityCommands(bot: TelegramBot) {
