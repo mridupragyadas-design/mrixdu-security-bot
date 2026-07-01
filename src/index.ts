@@ -1534,12 +1534,16 @@ function callbackHandler(bot: TelegramBot) {
       if (isSubscribed) {
         try {
           await unmuteUser(bot, info.chat_id, userId);
-        } catch {}
-        await bot.editMessageText('✅ Verification successful! You may now chat in the group.', {
-          chat_id: chatId,
-          message_id: messageId
-        });
-        await bot.sendMessage(info.chat_id, `${getUserDisplayName(callbackQuery.from)} has verified and can now talk.`);
+          await bot.editMessageText(`✅ @${callbackQuery.from.username || callbackQuery.from.first_name} has been verified and unmuted!`, {
+            chat_id: chatId,
+            message_id: messageId
+          });
+        } catch (error) {
+          await bot.editMessageText(`❌ Failed to unmute: ${error}`, {
+            chat_id: chatId,
+            message_id: messageId
+          });
+        }
         delete forceJoinWaiting[userId];
       } else {
         await bot.answerCallbackQuery(callbackQuery.id, {
@@ -1548,6 +1552,16 @@ function callbackHandler(bot: TelegramBot) {
         });
       }
     }
+    
+    // Handle private channel info button
+    if (callbackQuery.data === 'private_channel_info') {
+      await bot.answerCallbackQuery(callbackQuery.id, {
+        text: 'ℹ️ Please contact a group admin to get the invite link for the private channel.',
+        show_alert: true
+      });
+    }
+  });
+}
     
     // Handle private channel info button
     if (callbackQuery.data === 'private_channel_info') {
@@ -1595,68 +1609,67 @@ function messageHandler(bot: TelegramBot) {
       return;
     }
     
-    // Force subscribe - FIXED VERSION
-    if (!isAdmin) {
-      const channel = settings.force_subscribe;
-      if (channel) {
+    // Force subscribe - With Proper Buttons (Exact Style from Screenshot)
+if (!isAdmin) {
+    const channel = settings.force_subscribe;
+    if (channel) {
         const isSubscribed = await isUserInChannel(bot, user.id, channel);
         if (!isSubscribed) {
-          try {
-            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-          } catch {}
-          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
-          
-          if (!forceJoinWaiting[user.id]) {
-            let messageText = `@${user.username || user.first_name}, you must join `;
-            const buttons = [];
-            
-            // Check if it's a private channel (starts with -100)
-            if (channel.startsWith('-100')) {
-              messageText += `the private channel to talk here.`;
-              // For private channels, we need a different approach
-              // You need to store the invite link when setting up
-              buttons.push([{ 
-                text: 'ℹ️ Contact admin for invite', 
-                callback_data: 'private_channel_info' 
-              }]);
-            } else {
-              // Public channel - works with @username
-              const cleanChannel = channel.startsWith('@') ? channel.slice(1) : channel;
-              messageText += `${channel} to talk here.`;
-              buttons.push([{ 
-                text: '📢 Subscribe to channel', 
-                url: `https://t.me/${cleanChannel}` 
-              }]);
-            }
-            
-            messageText += `\n\nAfter joining, click the button below to verify:`;
-            buttons.push([{ text: '✅ I subscribed', callback_data: 'check_subscribe' }]);
-            
             try {
-              const sent = await bot.sendMessage(chatId, messageText, {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                  inline_keyboard: buttons
+                await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+            } catch {}
+            try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+            
+            if (!forceJoinWaiting[user.id]) {
+                let messageText = `@${user.username || user.first_name}, to be accepted in the group, please subscribe to our channel. Once joined, click the button below.`;
+                const buttons = [];
+                
+                // Check if it's a private channel (starts with -100)
+                if (channel.startsWith('-100')) {
+                    // Private channel - show info button instead
+                    buttons.push([{ 
+                        text: 'ℹ️ Contact Admin for Invite', 
+                        callback_data: 'private_channel_info' 
+                    }]);
+                } else {
+                    // Public channel - works with @username
+                    const cleanChannel = channel.startsWith('@') ? channel.substring(1) : channel;
+                    buttons.push([{ 
+                        text: '📢 Subscribe to Channel', 
+                        url: `https://t.me/${cleanChannel}` 
+                    }]);
                 }
-              });
-              forceJoinWaiting[user.id] = { 
-                chat_id: chatId, 
-                channel: channel, 
-                message_id: sent.message_id 
-              };
-            } catch (error) {
-              console.error('Failed to send force subscribe message:', error);
-              // Fallback: send a simple message without buttons
-              await bot.sendMessage(chatId, 
-                `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
-                `After joining, use /verify to confirm.`
-              );
+                
+                // Second row: Verification button (styled like "OK | I subscribed")
+                buttons.push([{ 
+                    text: '✅ OK | I Subscribed', 
+                    callback_data: 'check_subscribe' 
+                }]);
+                
+                try {
+                    const sent = await bot.sendMessage(chatId, messageText, {
+                        reply_markup: {
+                            inline_keyboard: buttons
+                        }
+                    });
+                    forceJoinWaiting[user.id] = { 
+                        chat_id: chatId, 
+                        channel: channel, 
+                        message_id: sent.message_id 
+                    };
+                } catch (error) {
+                    console.error('Failed to send force subscribe message:', error);
+                    // Fallback: send a simple message without buttons
+                    await bot.sendMessage(chatId, 
+                        `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
+                        `After joining, type /verify to confirm.`
+                    );
+                }
             }
-          }
-          return;
+            return;
         }
-      }
     }
+}
     
     // Auto-unmute if subscribed
     if (!isAdmin) {
