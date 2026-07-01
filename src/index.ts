@@ -1787,7 +1787,7 @@ function securityCommands(bot: TelegramBot) {
   });
 }
 
-// -------------------- Force Subscribe Command --------------------
+                // -------------------- Force Subscribe Command --------------------
 function forceSubscribeCommand(bot: TelegramBot) {
     // /forcesubscribe - Supports both public and private channels
     bot.onText(/\/forcesubscribe(?:\s+(.+))?/, async (msg, match) => {
@@ -1873,7 +1873,7 @@ function forceSubscribeCommand(bot: TelegramBot) {
                 { parse_mode: 'Markdown' }
             );
         }
-    });
+    }); // <-- Closes the /forcesubscribe handler
 
     // /forcesubscribeoff - Disable force subscribe
     bot.onText(/\/forcesubscribeoff/, async (msg) => {
@@ -1889,42 +1889,8 @@ function forceSubscribeCommand(bot: TelegramBot) {
         settings.force_subscribe = null;
         saveData(loadData());
         await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
-    });
-}
-
-    // /forcesubscribeoff - Keep this as is
-    bot.onText(/\/forcesubscribeoff/, async (msg) => {
-        const chatId = msg.chat.id;
-        const userId = msg.from?.id;
-
-        if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
-            await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
-            return;
-        }
-
-        const settings = getChatSettings(chatId);
-        settings.force_subscribe = null;
-        saveData(loadData());
-        await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
-    });
-}
-
-  // /forcesubscribeoff
-  bot.onText(/\/forcesubscribeoff/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from?.id;
-
-    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
-      await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
-      return;
-    }
-
-    const settings = getChatSettings(chatId);
-    settings.force_subscribe = null;
-    saveData(loadData());
-    await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
-  });
-}
+    }); // <-- Closes the /forcesubscribeoff handler
+} // <-- Closes the forceSubscribeCommand function
 
 // -------------------- Promote / Demote Commands --------------------
 function promoteDemoteCommands(bot: TelegramBot) {
