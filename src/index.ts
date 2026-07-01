@@ -1683,6 +1683,116 @@ function messageHandler(bot: TelegramBot) {
         } catch {}
       }
     }
+
+    // -------------------- Message Handler (Guard) --------------------
+function messageHandler(bot: TelegramBot) {
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    if (!user) return;
+    
+    // Track user
+    saveUser(user);
+    trackUserHistory(user);
+    
+    // Track members
+    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
+      saveMember(user.id, chatId);
+      if (msg.new_chat_members) {
+        for (const newUser of msg.new_chat_members) {
+          saveMember(newUser.id, chatId);
+        }
+      }
+    }
+    
+    // Skip if not in group
+    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+    const botInfo = await bot.getMe();
+    if (user.id === botInfo.id) return;
+    
+    const settings = getChatSettings(chatId);
+    const isAdmin = await isGroupAdmin(bot, chatId, user.id);
+    
+    // Night mode
+    if (settings.night_mode && !isAdmin) {
+      try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+      return;
+    }
+    
+    // Force subscribe - WITH PROPER BUTTONS
+    if (!isAdmin) {
+      const channel = settings.force_subscribe;
+      if (channel) {
+        const isSubscribed = await isUserInChannel(bot, user.id, channel);
+        if (!isSubscribed) {
+          try {
+            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+          } catch {}
+          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+          
+          if (!forceJoinWaiting[user.id]) {
+            let messageText = `@${user.username || user.first_name}, to be accepted in the group, please subscribe to our channel. Once joined, click the button below.`;
+            const buttons = [];
+            
+            // Check if it's a private channel (starts with -100)
+            if (channel.startsWith('-100')) {
+              buttons.push([{ 
+                text: 'ℹ️ Contact Admin for Invite', 
+                callback_data: 'private_channel_info' 
+              }]);
+            } else {
+              // Public channel - works with @username
+              const cleanChannel = channel.startsWith('@') ? channel.substring(1) : channel;
+              buttons.push([{ 
+                text: '📢 Subscribe to Channel', 
+                url: `https://t.me/${cleanChannel}` 
+              }]);
+            }
+            
+            // Second row: Verification button
+            buttons.push([{ 
+              text: '✅ OK | I Subscribed', 
+              callback_data: 'check_subscribe' 
+            }]);
+            
+            try {
+              const sent = await bot.sendMessage(chatId, messageText, {
+                reply_markup: {
+                  inline_keyboard: buttons
+                }
+              });
+              forceJoinWaiting[user.id] = { 
+                chat_id: chatId, 
+                channel: channel, 
+                message_id: sent.message_id 
+              };
+            } catch (error) {
+              console.error('Failed to send force subscribe message:', error);
+              await bot.sendMessage(chatId, 
+                `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
+                `After joining, type /verify to confirm.`
+              );
+            }
+          }
+          return;
+        }
+      }
+    }
+    
+    // Auto-unmute if subscribed
+    if (!isAdmin) {
+      const channel = settings.force_subscribe;
+      if (channel && await isUserInChannel(bot, user.id, channel)) {
+        try {
+          const member = await bot.getChatMember(chatId, user.id);
+          if (member.status === 'restricted' && !member.can_send_messages) {
+            await unmuteUser(bot, chatId, user.id);
+            await bot.sendMessage(chatId, `@${user.username || user.first_name} has joined ${channel} and has been unmuted automatically.`);
+          }
+        } catch {}
+      }
+    }
     
     // Media off
     if (settings.media_off && !isAdmin) {
