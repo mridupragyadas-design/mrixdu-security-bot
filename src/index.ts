@@ -1585,32 +1585,59 @@ function messageHandler(bot: TelegramBot) {
       return;
     }
     
-    // Force subscribe
-    if (!isAdmin) {
-      const channel = settings.force_subscribe;
-      if (channel) {
+// Force subscribe - Updated to support both public and private channels
+if (!isAdmin) {
+    const channel = settings.force_subscribe;
+    if (channel) {
         const isSubscribed = await isUserInChannel(bot, user.id, channel);
         if (!isSubscribed) {
-          try {
-            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-          } catch {}
-          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
-          
-          if (!forceJoinWaiting[user.id]) {
-            const sent = await bot.sendMessage(chatId, `@${user.username || user.first_name}, you must join ${channel} to talk here.\n\nAfter joining, click the button below to verify:`, {
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '📢 Subscribe to channel', url: `https://t.me/${channel.slice(1)}` }],
-                  [{ text: '✅ I subscribed', callback_data: 'check_subscribe' }]
-                ]
-              }
-            });
-            forceJoinWaiting[user.id] = { chat_id: chatId, channel, message_id: sent.message_id };
-          }
-          return;
+            try {
+                await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+            } catch {}
+            try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+            
+            if (!forceJoinWaiting[user.id]) {
+                // Generate the correct link based on channel type
+                let channelLink: string;
+                let displayName: string;
+                
+                if (channel.startsWith('-100')) {
+                    // Private channel - use the channel ID
+                    // Note: You cannot create a direct link to a private channel with just the ID
+                    // The user needs to be invited by an admin
+                    displayName = `private channel (ID: ${channel})`;
+                    channelLink = `https://t.me/joinchat/`; // This won't work without a join link
+                    // You should store the invite link separately or use a different approach
+                } else {
+                    // Public channel - use @username
+                    displayName = channel;
+                    channelLink = `https://t.me/${channel.slice(1)}`;
+                }
+                
+                const sent = await bot.sendMessage(chatId, 
+                    `@${user.username || user.first_name}, you must join ${displayName} to talk here.\n\n` +
+                    `⚠️ **For private channels:** You need to be added by an admin.\n` +
+                    `After joining, click the button below to verify:`,
+                    {
+                        parse_mode: 'Markdown',
+                        reply_markup: {
+                            inline_keyboard: [
+                                // For private channels, you can't add a direct join button
+                                // Instead, show a message
+                                channel.startsWith('-100') 
+                                    ? [{ text: 'ℹ️ Private channel', callback_data: 'private_channel_info' }]
+                                    : [{ text: '📢 Subscribe to channel', url: channelLink }],
+                                [{ text: '✅ I subscribed', callback_data: 'check_subscribe' }]
+                            ]
+                        }
+                    }
+                );
+                forceJoinWaiting[user.id] = { chat_id: chatId, channel, message_id: sent.message_id };
+            }
+            return;
         }
-      }
     }
+}
     
     // Auto-unmute if subscribed
     if (!isAdmin) {
