@@ -45,7 +45,7 @@ interface MessageTracker {
 }
 
 // -------------------- Configuration --------------------
-const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN || '8970227707:AAGfCVogN14Z3ex6WkABHAo0owRN32fOPFs';
+const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN || '8970227707:AAFUUr70Wdo7MnbY1kHUkkATtUNgiibpGf0';
 const DATA_FILE = 'security_bot_data.json';
 const DB_FILE = 'users.db';
 const HISTORY_FILE = 'user_history.json';
