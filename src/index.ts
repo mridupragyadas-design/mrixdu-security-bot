@@ -1762,36 +1762,108 @@ function securityCommands(bot: TelegramBot) {
 
 // -------------------- Force Subscribe Command --------------------
 function forceSubscribeCommand(bot: TelegramBot) {
-  // /forcesubscribe @channel
-  bot.onText(/\/forcesubscribe(?:\s+@(\w+))?/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from?.id;
+    // /forcesubscribe - Supports both public and private channels
+    bot.onText(/\/forcesubscribe(?:\s+(.+))?/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
 
-    if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
-      await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
-      return;
-    }
+        if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+            await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+            return;
+        }
 
-    if (!match || !match[1]) {
-      await bot.sendMessage(chatId, 'Usage: /forcesubscribe @channelusername');
-      return;
-    }
+        if (!match || !match[1]) {
+            await bot.sendMessage(chatId, 
+                '📌 **Force Subscribe Setup**\n\n' +
+                '**For PUBLIC channels:**\n' +
+                '`/forcesubscribe @channelname`\n\n' +
+                '**For PRIVATE channels:**\n' +
+                '`/forcesubscribe -1001234567890`\n\n' +
+                '**How to get private channel ID:**\n' +
+                '1️⃣ Add bot as admin to private channel\n' +
+                '2️⃣ Forward a message from channel to @userinfobot\n' +
+                '3️⃣ Copy the Channel ID (starts with -100)\n\n' +
+                '**Disable force subscribe:**\n' +
+                '`/forcesubscribeoff`',
+                { parse_mode: 'Markdown' }
+            );
+            return;
+        }
 
-    const channel = `@${match[1]}`;
+        let channelInput = match[1].trim();
+        
+        // Check if it's a channel ID (starts with -100 or is numeric)
+        const isChannelId = channelInput.startsWith('-100') || /^-?\d+$/.test(channelInput);
 
-    try {
-      // Make sure the bot can actually see membership info for that channel
-      await bot.getChat(channel);
-    } catch {
-      await bot.sendMessage(chatId, `❌ Could not find ${channel}. Make sure this bot is an admin of that channel.`);
-      return;
-    }
+        try {
+            let channelIdentifier = channelInput;
+            let chatInfo;
 
-    const settings = getChatSettings(chatId);
-    settings.force_subscribe = channel;
-    saveData(loadData());
-    await bot.sendMessage(chatId, `✅ Force subscribe enabled. Members must join ${channel} to chat here.`);
-  });
+            if (isChannelId) {
+                // Ensure proper format for private channel
+                if (!channelInput.startsWith('-100') && /^\d+$/.test(channelInput)) {
+                    channelIdentifier = `-100${channelInput}`;
+                }
+                chatInfo = await bot.getChat(channelIdentifier);
+            } else {
+                // Public channel - ensure @ symbol
+                if (!channelInput.startsWith('@')) {
+                    channelIdentifier = `@${channelInput}`;
+                } else {
+                    channelIdentifier = channelInput;
+                }
+                chatInfo = await bot.getChat(channelIdentifier);
+            }
+
+            if (!chatInfo || chatInfo.type !== 'channel') {
+                await bot.sendMessage(chatId, '❌ Invalid channel. Please provide a valid channel username or ID.');
+                return;
+            }
+
+            const settings = getChatSettings(chatId);
+            settings.force_subscribe = channelIdentifier;
+            saveData(loadData());
+
+            const channelType = isChannelId ? '🔒 Private' : '📢 Public';
+            await bot.sendMessage(chatId, 
+                `✅ **Force Subscribe Enabled!**\n\n` +
+                `📌 **Channel:** ${chatInfo.title}\n` +
+                `🔗 **Identifier:** \`${channelIdentifier}\`\n` +
+                `📂 **Type:** ${channelType}\n` +
+                `🔒 **Requirement:** Members must join this channel to chat.\n\n` +
+                `⚠️ **Important:** Bot must remain an admin in the channel.`,
+                { parse_mode: 'Markdown' }
+            );
+
+        } catch (error: any) {
+            await bot.sendMessage(chatId, 
+                `❌ **Error:** ${error.message}\n\n` +
+                `**Troubleshooting:**\n` +
+                `• For private channels: Bot must be an admin in the channel\n` +
+                `• Verify the channel ID is correct (format: -1001234567890)\n` +
+                `• For public channels: Use @username format\n\n` +
+                `**Get channel ID:** Forward a message to @userinfobot`,
+                { parse_mode: 'Markdown' }
+            );
+        }
+    });
+
+    // /forcesubscribeoff - Keep this as is
+    bot.onText(/\/forcesubscribeoff/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
+
+        if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+            await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+            return;
+        }
+
+        const settings = getChatSettings(chatId);
+        settings.force_subscribe = null;
+        saveData(loadData());
+        await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
+    });
+}
 
   // /forcesubscribeoff
   bot.onText(/\/forcesubscribeoff/, async (msg) => {
