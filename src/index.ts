@@ -1848,6 +1848,23 @@ function forceSubscribeCommand(bot: TelegramBot) {
         }
     });
 
+    // /forcesubscribeoff - Disable force subscribe
+    bot.onText(/\/forcesubscribeoff/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from?.id;
+
+        if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
+            await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+            return;
+        }
+
+        const settings = getChatSettings(chatId);
+        settings.force_subscribe = null;
+        saveData(loadData());
+        await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
+    });
+}
+
     // /forcesubscribeoff - Keep this as is
     bot.onText(/\/forcesubscribeoff/, async (msg) => {
         const chatId = msg.chat.id;
