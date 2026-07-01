@@ -27,6 +27,7 @@ interface ChatSettings {
   anti_spam: boolean;
   force_subscribe: string | null;
   media_off: boolean;
+  permanent_night: boolean; // New: permanent night mode
 }
 
 interface UserHistory {
@@ -135,7 +136,8 @@ function getChatSettings(chatId: number | string): ChatSettings {
       filters: {},
       anti_spam: false,
       force_subscribe: null,
-      media_off: false
+      media_off: false,
+      permanent_night: false
     };
     saveData(data);
   }
@@ -189,8 +191,8 @@ function saveMember(userId: number, chatId: number): void {
 function getMembers(chatId: number): number[] {
   const members = loadMembers();
   return members[String(chatId)] || [];
-                    }
-// Part 3: Helper Functions
+}
+// Part 3: Helper Functions & Admin Checks
 
 // -------------------- Helper Functions --------------------
 function parseTimeWithAmPm(timeStr: string): string | null {
@@ -244,9 +246,9 @@ async function isGroupAdmin(bot: TelegramBot, chatId: number, userId: number): P
   }
 }
 
-async function isUserInChannel(bot: TelegramBot, userId: number, channelUsername: string): Promise<boolean> {
+async function isUserInChannel(bot: TelegramBot, userId: number, channelIdentifier: string): Promise<boolean> {
   try {
-    const member = await bot.getChatMember(channelUsername, userId);
+    const member = await bot.getChatMember(channelIdentifier, userId);
     return member.status === 'member' || member.status === 'administrator' || member.status === 'creator';
   } catch {
     return false;
@@ -306,7 +308,7 @@ function trackUserHistory(user: TelegramBot.User): void {
   }
   
   saveHistory(historyDb);
-}
+    }
 // Part 4: Auto Night Scheduler & Scan Functions
 
 // -------------------- Auto Night Mode Scheduler --------------------
@@ -317,6 +319,19 @@ async function autoNightScheduler(bot: TelegramBot): Promise<void> {
     
     for (const [chatIdStr, settings] of Object.entries(currentData)) {
       const chatId = parseInt(chatIdStr);
+      
+      // Skip if permanent night is enabled
+      if (settings.permanent_night) {
+        if (!settings.night_mode) {
+          settings.night_mode = true;
+          saveData(currentData);
+          try {
+            await bot.sendMessage(chatId, '🌙 *Permanent Night Mode Active*\nAll non-admin messages will be deleted.', { parse_mode: 'Markdown' });
+          } catch {}
+        }
+        continue;
+      }
+      
       const on = settings.night_on || DEFAULT_NIGHT_ON;
       const off = settings.night_off || DEFAULT_NIGHT_OFF;
       
@@ -439,7 +454,7 @@ async function autoCleanJob(bot: TelegramBot, chatId: number): Promise<void> {
     console.error('Auto clean error:', error);
   }
 }
-// Part 5: Command Handlers (Part 1) - Start through Mute commands
+// Part 5: Command Handlers - Start, Commands, CheckAdmin, Night Mode
 
 // -------------------- Command Handlers --------------------
 // /start
@@ -467,7 +482,8 @@ function startCommand(bot: TelegramBot) {
         '• Deleted Account Cleanup\n\n' +
         '🌙 **Night Mode**\n' +
         '• Automatic Group Lockdown\n' +
-        '• Custom Night Schedule\n\n' +
+        '• Custom Night Schedule\n' +
+        '• Permanent Night Mode (/nightoff perma)\n\n' +
         '🚫 **Filters & Blacklists**\n' +
         '• Word Filtering\n' +
         '• Blacklisted Words Control\n' +
@@ -535,6 +551,8 @@ function commandsListCommand(bot: TelegramBot) {
         '🌙 **Night Mode**\n' +
         '• `/nighton` - Enable night mode\n' +
         '• `/nightoff` - Disable night mode\n' +
+        '• `/nightoff perma` - Enable permanent night mode\n' +
+        '• `/nighton perma` - Disable permanent night mode\n' +
         '• `/setnight HH:MM HH:MM` - Set night schedule\n\n' +
         '🚫 **Filters & Blacklists**\n' +
         '• `/block word` - Block a word\n' +
@@ -581,10 +599,9 @@ function checkAdminCommand(bot: TelegramBot) {
 // Night Mode Commands
 function nightModeCommands(bot: TelegramBot) {
   // /nighton
-  bot.onText(/\/nighton/, async (msg) => {
+  bot.onText(/\/nighton(?:\s+perma)?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
@@ -592,16 +609,25 @@ function nightModeCommands(bot: TelegramBot) {
     }
     
     const settings = getChatSettings(chatId);
+    
+    // Check if "perma" is specified
+    if (match && match[1] && match[1].toLowerCase() === 'perma') {
+      settings.permanent_night = false;
+      settings.night_mode = true;
+      saveData(loadData());
+      await bot.sendMessage(chatId, '🌙 Permanent night mode disabled. Night mode enabled normally.');
+      return;
+    }
+    
     settings.night_mode = true;
     saveData(loadData());
     await bot.sendMessage(chatId, '🌙 Night mode enabled. Non-admin messages will be deleted.');
   });
 
   // /nightoff
-  bot.onText(/\/nightoff/, async (msg) => {
+  bot.onText(/\/nightoff(?:\s+perma)?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
@@ -609,7 +635,18 @@ function nightModeCommands(bot: TelegramBot) {
     }
     
     const settings = getChatSettings(chatId);
+    
+    // Check if "perma" is specified
+    if (match && match[1] && match[1].toLowerCase() === 'perma') {
+      settings.permanent_night = true;
+      settings.night_mode = true;
+      saveData(loadData());
+      await bot.sendMessage(chatId, '🌙 Permanent night mode enabled! Night mode will never turn off automatically.');
+      return;
+    }
+    
     settings.night_mode = false;
+    settings.permanent_night = false;
     saveData(loadData());
     await bot.sendMessage(chatId, '☀️ Night mode disabled.');
   });
@@ -618,7 +655,6 @@ function nightModeCommands(bot: TelegramBot) {
   bot.onText(/\/setnight (.+) (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Only group admins can use this command.');
@@ -644,8 +680,8 @@ function nightModeCommands(bot: TelegramBot) {
     saveData(loadData());
     await bot.sendMessage(chatId, `✅ Auto night set: ON ${onTime} IST, OFF ${offTime} IST.`);
   });
-        }
-// Part 6: Command Handlers (Part 2) - Ban through Unmute
+}
+// Part 6: Command Handlers - Ban through Unmute
 
 // Ban/Unban/Kick/Mute/Unmute Commands
 function moderationCommands(bot: TelegramBot) {
@@ -653,7 +689,6 @@ function moderationCommands(bot: TelegramBot) {
   bot.onText(/\/ban(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -700,7 +735,6 @@ function moderationCommands(bot: TelegramBot) {
   bot.onText(/\/unban(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -741,7 +775,6 @@ function moderationCommands(bot: TelegramBot) {
   bot.onText(/\/kick(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -789,7 +822,6 @@ function moderationCommands(bot: TelegramBot) {
   bot.onText(/\/mute(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -840,7 +872,6 @@ function moderationCommands(bot: TelegramBot) {
   bot.onText(/\/unmute(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -895,15 +926,14 @@ function moderationCommands(bot: TelegramBot) {
       await bot.sendMessage(chatId, `Failed to unmute: ${error.message}`);
     }
   });
-                            }
-// Part 7: Command Handlers (Part 3) - Info through Filter commands
+             }
+// Part 7: Info and Filter Commands
 
 // /info
 function infoCommand(bot: TelegramBot) {
   bot.onText(/\/info(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -975,7 +1005,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/block (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -999,7 +1028,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/unblock (.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1030,7 +1058,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/blocksticker/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1057,7 +1084,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/unblocksticker/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1085,7 +1111,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/banstickerpack/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1117,7 +1142,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/unbanstickerpack/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1150,7 +1174,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/pin/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1174,7 +1197,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/filter (\w+)(?: (.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1212,7 +1234,6 @@ function filterCommands(bot: TelegramBot) {
   bot.onText(/\/delfilter (\w+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
-    const botInfo = await bot.getMe();
     
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
       await bot.sendMessage(chatId, '⚠️ Admins only.');
@@ -1235,8 +1256,8 @@ function filterCommands(bot: TelegramBot) {
       await bot.sendMessage(chatId, 'Filter not found.');
     }
   });
-      }
-// Part 9: Command Handlers (Part 5) - History, Stats, Clean, AutoClean
+  }
+// Part 8: History, Stats, Clean, AutoClean Commands
 
 // /history
 function historyCommand(bot: TelegramBot) {
@@ -1504,7 +1525,7 @@ function autoCleanCommands(bot: TelegramBot) {
     }
   });
   }
-// Part 10: Callback Handler, Message Handler, Admin Mention, Main
+// Part 9: Callback Handler, Message Handler, Security Commands, Force Subscribe
 
 // -------------------- Callback Query Handler --------------------
 function callbackHandler(bot: TelegramBot) {
@@ -1562,129 +1583,8 @@ function callbackHandler(bot: TelegramBot) {
     }
   });
 }
-    
-    // Handle private channel info button
-    if (callbackQuery.data === 'private_channel_info') {
-      await bot.answerCallbackQuery(callbackQuery.id, {
-        text: 'ℹ️ Please contact a group admin to get the invite link for the private channel.',
-        show_alert: true
-      });
-    }
-  });
-}
 
-                        
-      // -------------------- Message Handler (Guard) --------------------
-function messageHandler(bot: TelegramBot) {
-  bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const user = msg.from;
-    
-    if (!user) return;
-    
-    // Track user
-    saveUser(user);
-    trackUserHistory(user);
-    
-    // Track members
-    if (msg.chat.type === 'group' || msg.chat.type === 'supergroup') {
-      saveMember(user.id, chatId);
-      if (msg.new_chat_members) {
-        for (const newUser of msg.new_chat_members) {
-          saveMember(newUser.id, chatId);
-        }
-      }
-    }
-    
-    // Skip if not in group
-    if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
-    const botInfo = await bot.getMe();
-    if (user.id === botInfo.id) return;
-    
-    const settings = getChatSettings(chatId);
-    const isAdmin = await isGroupAdmin(bot, chatId, user.id);
-    
-    // Night mode
-    if (settings.night_mode && !isAdmin) {
-      try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
-      return;
-    }
-    
-    // Force subscribe - WITH PROPER BUTTONS
-    if (!isAdmin) {
-      const channel = settings.force_subscribe;
-      if (channel) {
-        const isSubscribed = await isUserInChannel(bot, user.id, channel);
-        if (!isSubscribed) {
-          try {
-            await muteUser(bot, chatId, user.id, new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
-          } catch {}
-          try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
-          
-          if (!forceJoinWaiting[user.id]) {
-            let messageText = `@${user.username || user.first_name}, to be accepted in the group, please subscribe to our channel. Once joined, click the button below.`;
-            const buttons = [];
-            
-            // Check if it's a private channel (starts with -100)
-            if (channel.startsWith('-100')) {
-              buttons.push([{ 
-                text: 'ℹ️ Contact Admin for Invite', 
-                callback_data: 'private_channel_info' 
-              }]);
-            } else {
-              // Public channel - works with @username
-              const cleanChannel = channel.startsWith('@') ? channel.substring(1) : channel;
-              buttons.push([{ 
-                text: '📢 Subscribe to Channel', 
-                url: `https://t.me/${cleanChannel}` 
-              }]);
-            }
-            
-            // Second row: Verification button
-            buttons.push([{ 
-              text: '✅ OK | I Subscribed', 
-              callback_data: 'check_subscribe' 
-            }]);
-            
-            try {
-              const sent = await bot.sendMessage(chatId, messageText, {
-                reply_markup: {
-                  inline_keyboard: buttons
-                }
-              });
-              forceJoinWaiting[user.id] = { 
-                chat_id: chatId, 
-                channel: channel, 
-                message_id: sent.message_id 
-              };
-            } catch (error) {
-              console.error('Failed to send force subscribe message:', error);
-              await bot.sendMessage(chatId, 
-                `@${user.username || user.first_name}, you must join ${channel} to talk here. ` +
-                `After joining, type /verify to confirm.`
-              );
-            }
-          }
-          return;
-        }
-      }
-    }
-    
-    // Auto-unmute if subscribed
-    if (!isAdmin) {
-      const channel = settings.force_subscribe;
-      if (channel && await isUserInChannel(bot, user.id, channel)) {
-        try {
-          const member = await bot.getChatMember(chatId, user.id);
-          if (member.status === 'restricted' && !member.can_send_messages) {
-            await unmuteUser(bot, chatId, user.id);
-            await bot.sendMessage(chatId, `@${user.username || user.first_name} has joined ${channel} and has been unmuted automatically.`);
-          }
-        } catch {}
-      }
-    }
-
-    // -------------------- Message Handler (Guard) --------------------
+// -------------------- Message Handler (Guard) --------------------
 function messageHandler(bot: TelegramBot) {
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -1858,8 +1758,45 @@ function messageHandler(bot: TelegramBot) {
         return;
       }
     }
-  }); // <-- This closes the bot.on('message')
-} // <-- This closes the messageHandler function
+  });
+}
+
+// -------------------- /verify Command --------------------
+function verifyCommand(bot: TelegramBot) {
+  bot.onText(/\/verify/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from?.id;
+    
+    if (!userId) {
+      await bot.sendMessage(chatId, '❌ Could not identify you.');
+      return;
+    }
+    
+    const settings = getChatSettings(chatId);
+    const channel = settings.force_subscribe;
+    
+    if (!channel) {
+      await bot.sendMessage(chatId, 'ℹ️ Force subscribe is not enabled in this group.');
+      return;
+    }
+    
+    const isSubscribed = await isUserInChannel(bot, userId, channel);
+    
+    if (isSubscribed) {
+      try {
+        await unmuteUser(bot, chatId, userId);
+        await bot.sendMessage(chatId, `✅ @${msg.from?.username || userId} has been verified and unmuted!`);
+      } catch (error) {
+        await bot.sendMessage(chatId, `❌ Failed to unmute: ${error}`);
+      }
+    } else {
+      await bot.sendMessage(chatId, 
+        `❌ You haven't joined ${channel} yet.\n` +
+        `Please join first, then use /verify again.`
+      );
+    }
+  });
+}
 
 // -------------------- Security Commands (Anti-Spam) --------------------
 function securityCommands(bot: TelegramBot) {
@@ -1928,7 +1865,7 @@ function securityCommands(bot: TelegramBot) {
   });
 }
 
-                // -------------------- Force Subscribe Command --------------------
+// -------------------- Force Subscribe Command --------------------
 function forceSubscribeCommand(bot: TelegramBot) {
     // /forcesubscribe - Supports both public and private channels
     bot.onText(/\/forcesubscribe(?:\s+(.+))?/, async (msg, match) => {
@@ -2014,7 +1951,7 @@ function forceSubscribeCommand(bot: TelegramBot) {
                 { parse_mode: 'Markdown' }
             );
         }
-    }); // <-- Closes the /forcesubscribe handler
+    });
 
     // /forcesubscribeoff - Disable force subscribe
     bot.onText(/\/forcesubscribeoff/, async (msg) => {
@@ -2030,8 +1967,9 @@ function forceSubscribeCommand(bot: TelegramBot) {
         settings.force_subscribe = null;
         saveData(loadData());
         await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
-    }); // <-- Closes the /forcesubscribeoff handler
-} // <-- Closes the forceSubscribeCommand function
+    });
+                }
+// Part 10: Promote/Demote, Admin Mention, Main Function
 
 // -------------------- Promote / Demote Commands --------------------
 function promoteDemoteCommands(bot: TelegramBot) {
@@ -2206,6 +2144,7 @@ async function main(): Promise<void> {
     statsCommand(bot);
     cleanCommand(bot);
     autoCleanCommands(bot);
+    verifyCommand(bot); // Added verify command
     
     // Register handlers
     callbackHandler(bot);
