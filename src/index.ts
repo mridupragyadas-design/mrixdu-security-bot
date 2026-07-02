@@ -46,13 +46,22 @@ interface MessageTracker {
 }
 
 // -------------------- Configuration --------------------
-const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN;
-if (!BOT_TOKEN) {
-  console.error('FATAL ERROR: SECURITY_BOT_TOKEN environment variable is not set.');
-  console.error('Set it before starting the bot, e.g.:');
-  console.error('  SECURITY_BOT_TOKEN=your:token npm start');
-  process.exit(1);
-}
+// Wrapped in an IIFE so TypeScript can give BOT_TOKEN a definite `string`
+// type. A plain `if (!BOT_TOKEN) process.exit(1)` at module scope narrows
+// the type only at that point — it doesn't carry into other functions
+// (e.g. main()) that read BOT_TOKEN later, which caused:
+//   TS2345: Argument of type 'string | undefined' is not assignable to
+//   parameter of type 'string'.
+const BOT_TOKEN: string = (() => {
+  const token = process.env.SECURITY_BOT_TOKEN;
+  if (!token) {
+    console.error('FATAL ERROR: SECURITY_BOT_TOKEN environment variable is not set.');
+    console.error('Set it before starting the bot, e.g.:');
+    console.error('  SECURITY_BOT_TOKEN=your:token npm start');
+    process.exit(1);
+  }
+  return token;
+})();
 const DATA_FILE = 'security_bot_data.json';
 const DB_FILE = 'users.db';
 const HISTORY_FILE = 'user_history.json';
@@ -1988,8 +1997,7 @@ function checkBotPermissionsCommand(bot: TelegramBot) {
         permissions += `\n⚠️ **Bot is NOT an admin!**\n`;
         permissions += `Please promote the bot to admin with "Restrict Members" permission.`;
       }
-      
-      await bot.sendMessage(chatId, permissions, { parse_mode: 'Markdown' });
+           await bot.sendMessage(chatId, permissions, { parse_mode: 'Markdown' });
     } catch (error: any) {
       await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
     }
@@ -1997,6 +2005,7 @@ function checkBotPermissionsCommand(bot: TelegramBot) {
 }
 
 // Part 10: Promote/Demote, Admin Mention, Main Function
+
 // -------------------- Promote / Demote Commands --------------------
 function promoteDemoteCommands(bot: TelegramBot) {
   bot.onText(/^\/promote(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
