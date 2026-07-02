@@ -46,7 +46,13 @@ interface MessageTracker {
 }
 
 // -------------------- Configuration --------------------
-const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN || '8970227707:AAFUUr70Wdo7MnbY1kHUkkATtUNgiibpGf0';
+const BOT_TOKEN = process.env.SECURITY_BOT_TOKEN;
+if (!BOT_TOKEN) {
+  console.error('FATAL ERROR: SECURITY_BOT_TOKEN environment variable is not set.');
+  console.error('Set it before starting the bot, e.g.:');
+  console.error('  SECURITY_BOT_TOKEN=your:token npm start');
+  process.exit(1);
+}
 const DATA_FILE = 'security_bot_data.json';
 const DB_FILE = 'users.db';
 const HISTORY_FILE = 'user_history.json';
@@ -235,6 +241,9 @@ function getUserDisplayName(user: TelegramBot.User): string {
 // -------------------- Bot State --------------------
 let msgTracker: MessageTracker = {};
 let forceJoinWaiting: Record<number, ForceJoinWaiting> = {};
+// Cached bot user id, set once at startup so messageHandler doesn't have to
+// call the getMe() API on every single incoming message.
+let cachedBotId: number | null = null;
 
 // -------------------- Admin Check Functions --------------------
 async function isGroupAdmin(bot: TelegramBot, chatId: number, userId: number): Promise<boolean> {
@@ -268,8 +277,13 @@ async function muteUser(bot: TelegramBot, chatId: number, userId: number, untilD
       can_send_polls: false,
       can_send_other_messages: false,
       can_add_web_page_previews: false
-    }
-  });
+    },
+    // BUG FIX: untilDate was accepted as a parameter but never actually sent
+    // to Telegram, so restrictChatMember() applied an indefinite mute.
+    // Anti-spam mutes (meant to last 5 minutes) were permanent until an
+    // admin manually ran /unmute. Telegram expects seconds since epoch.
+    until_date: Math.floor(untilDate.getTime() / 1000)
+  } as any);
 }
 
 // UPDATED unmuteUser – restores ALL permissions and logs errors
@@ -334,16 +348,20 @@ function trackUserHistory(user: TelegramBot.User): void {
 async function autoNightScheduler(bot: TelegramBot): Promise<void> {
   while (true) {
     const currentTime = getCurrentTime();
-    const currentData = loadData();
-    
-    for (const [chatIdStr, settings] of Object.entries(currentData)) {
+
+    // IMPORTANT: iterate and mutate the shared in-memory `data` store (not a
+    // separate loadData() snapshot). Command handlers also read/write `data`
+    // directly, so using a disconnected copy here meant automatic night-mode
+    // changes were saved to disk but never actually applied to live message
+    // filtering (messageHandler reads settings from `data`, not from disk).
+    for (const [chatIdStr, settings] of Object.entries(data)) {
       const chatId = parseInt(chatIdStr);
       
       // Skip if permanent night is enabled
       if (settings.permanent_night) {
         if (!settings.night_mode) {
           settings.night_mode = true;
-          saveData(currentData);
+          saveData(data);
           try {
             await bot.sendMessage(chatId, '🌙 *Permanent Night Mode Active*\nAll non-admin messages will be deleted.', { parse_mode: 'Markdown' });
           } catch {}
@@ -363,13 +381,13 @@ async function autoNightScheduler(bot: TelegramBot): Promise<void> {
       
       if (should && !settings.night_mode) {
         settings.night_mode = true;
-        saveData(currentData);
+        saveData(data);
         try {
           await bot.sendMessage(chatId, '🌙 *Night Mode Enabled* (auto)\nAll non-admin messages will be deleted.', { parse_mode: 'Markdown' });
         } catch {}
       } else if (!should && settings.night_mode) {
         settings.night_mode = false;
-        saveData(currentData);
+        saveData(data);
         try {
           await bot.sendMessage(chatId, '☀️ *Night Mode Disabled* (auto)\nMessage deletion turned off.', { parse_mode: 'Markdown' });
         } catch {}
@@ -478,7 +496,7 @@ async function autoCleanJob(bot: TelegramBot, chatId: number): Promise<void> {
 // -------------------- Command Handlers --------------------
 // /start
 function startCommand(bot: TelegramBot) {
-  bot.onText(/\/start/, async (msg) => {
+  bot.onText(/^\/start(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     
     if (msg.chat.type === 'private') {
@@ -546,7 +564,7 @@ function startCommand(bot: TelegramBot) {
 
 // /commands
 function commandsListCommand(bot: TelegramBot) {
-  bot.onText(/\/commands/, async (msg) => {
+  bot.onText(/^\/commands(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     
     if (msg.chat.type === 'private') {
@@ -602,7 +620,7 @@ function commandsListCommand(bot: TelegramBot) {
 
 // /checkadmin
 function checkAdminCommand(bot: TelegramBot) {
-  bot.onText(/\/checkadmin/, async (msg) => {
+  bot.onText(/^\/checkadmin(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const botInfo = await bot.getMe();
     
@@ -619,7 +637,7 @@ function checkAdminCommand(bot: TelegramBot) {
 // Night Mode Commands
 function nightModeCommands(bot: TelegramBot) {
   // /nighton
-  bot.onText(/\/nighton(?:\s+perma)?/, async (msg, match) => {
+  bot.onText(/^\/nighton(?!\w)(?:@\w+)?(?:\s+(perma))?/i, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -633,18 +651,18 @@ function nightModeCommands(bot: TelegramBot) {
     if (match && match[1] && match[1].toLowerCase() === 'perma') {
       settings.permanent_night = false;
       settings.night_mode = true;
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, '🌙 Permanent night mode disabled. Night mode enabled normally.');
       return;
     }
     
     settings.night_mode = true;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '🌙 Night mode enabled. Non-admin messages will be deleted.');
   });
 
   // /nightoff
-  bot.onText(/\/nightoff(?:\s+perma)?/, async (msg, match) => {
+  bot.onText(/^\/nightoff(?!\w)(?:@\w+)?(?:\s+(perma))?/i, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -658,19 +676,19 @@ function nightModeCommands(bot: TelegramBot) {
     if (match && match[1] && match[1].toLowerCase() === 'perma') {
       settings.permanent_night = true;
       settings.night_mode = true;
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, '🌙 Permanent night mode enabled! Night mode will never turn off automatically.');
       return;
     }
     
     settings.night_mode = false;
     settings.permanent_night = false;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '☀️ Night mode disabled.');
   });
 
   // /setnight
-  bot.onText(/\/setnight (.+) (.+)/, async (msg, match) => {
+  bot.onText(/^\/setnight(?!\w)(?:@\w+)?\s+(\S+)\s+(\S+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -695,7 +713,7 @@ function nightModeCommands(bot: TelegramBot) {
     const settings = getChatSettings(chatId);
     settings.night_on = onTime;
     settings.night_off = offTime;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, `✅ Auto night set: ON ${onTime} IST, OFF ${offTime} IST.`);
   });
         }
@@ -704,7 +722,7 @@ function nightModeCommands(bot: TelegramBot) {
 // Ban/Unban/Kick/Mute/Unmute Commands
 function moderationCommands(bot: TelegramBot) {
   // /ban
-  bot.onText(/\/ban(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/ban(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -750,7 +768,7 @@ function moderationCommands(bot: TelegramBot) {
   });
 
   // /unban
-  bot.onText(/\/unban(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/unban(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -790,7 +808,7 @@ function moderationCommands(bot: TelegramBot) {
   });
 
   // /kick
-  bot.onText(/\/kick(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/kick(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -837,7 +855,7 @@ function moderationCommands(bot: TelegramBot) {
   });
 
   // /mute
-  bot.onText(/\/mute(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/mute(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -885,7 +903,7 @@ function moderationCommands(bot: TelegramBot) {
   });
 
   // /unmute
-  bot.onText(/\/unmute(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/unmute(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -934,7 +952,7 @@ function moderationCommands(bot: TelegramBot) {
 
 // /info
 function infoCommand(bot: TelegramBot) {
-  bot.onText(/\/info(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/info(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1005,7 +1023,7 @@ function infoCommand(bot: TelegramBot) {
 // Word, Sticker, Filter Commands
 function filterCommands(bot: TelegramBot) {
   // /block
-  bot.onText(/\/block (.+)/, async (msg, match) => {
+  bot.onText(/^\/block(?!\w)(?:@\w+)?\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1023,12 +1041,12 @@ function filterCommands(bot: TelegramBot) {
     const settings = getChatSettings(chatId);
     const newWords = words.filter(w => !settings.blocked_words.includes(w.toLowerCase()));
     settings.blocked_words.push(...newWords.map(w => w.toLowerCase()));
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, `🚫 Blocked words: ${newWords.join(', ')}`);
   });
 
   // /unblock
-  bot.onText(/\/unblock (.+)/, async (msg, match) => {
+  bot.onText(/^\/unblock(?!\w)(?:@\w+)?\s+(.+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1053,12 +1071,12 @@ function filterCommands(bot: TelegramBot) {
         removed.push(w);
       }
     }
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, `✅ Unblocked: ${removed.length ? removed.join(', ') : 'None'}`);
   });
 
   // /blocksticker
-  bot.onText(/\/blocksticker/, async (msg) => {
+  bot.onText(/^\/blocksticker(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1076,7 +1094,7 @@ function filterCommands(bot: TelegramBot) {
     const settings = getChatSettings(chatId);
     if (!settings.blocked_stickers.includes(stickerId)) {
       settings.blocked_stickers.push(stickerId);
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, '🚫 Sticker blocked.');
     } else {
       await bot.sendMessage(chatId, 'Sticker already blocked.');
@@ -1084,7 +1102,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /unblocksticker
-  bot.onText(/\/unblocksticker/, async (msg) => {
+  bot.onText(/^\/unblocksticker(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1103,7 +1121,7 @@ function filterCommands(bot: TelegramBot) {
     const index = settings.blocked_stickers.indexOf(stickerId);
     if (index !== -1) {
       settings.blocked_stickers.splice(index, 1);
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, '✅ Sticker unblocked.');
     } else {
       await bot.sendMessage(chatId, 'Sticker not blocked.');
@@ -1111,7 +1129,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /banstickerpack
-  bot.onText(/\/banstickerpack/, async (msg) => {
+  bot.onText(/^\/banstickerpack(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1134,7 +1152,7 @@ function filterCommands(bot: TelegramBot) {
     const settings = getChatSettings(chatId);
     if (!settings.banned_sticker_packs.includes(packName)) {
       settings.banned_sticker_packs.push(packName);
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, `🚫 Sticker pack \`${packName}\` banned.`, { parse_mode: 'Markdown' });
     } else {
       await bot.sendMessage(chatId, 'This sticker pack is already banned.');
@@ -1142,7 +1160,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /unbanstickerpack
-  bot.onText(/\/unbanstickerpack/, async (msg) => {
+  bot.onText(/^\/unbanstickerpack(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1166,7 +1184,7 @@ function filterCommands(bot: TelegramBot) {
     const index = settings.banned_sticker_packs.indexOf(packName);
     if (index !== -1) {
       settings.banned_sticker_packs.splice(index, 1);
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, `✅ Sticker pack \`${packName}\` unbanned.`, { parse_mode: 'Markdown' });
     } else {
       await bot.sendMessage(chatId, 'This sticker pack was not banned.');
@@ -1174,7 +1192,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /pin
-  bot.onText(/\/pin/, async (msg) => {
+  bot.onText(/^\/pin(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1197,7 +1215,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /filter
-  bot.onText(/\/filter (\w+)(?: (.+))?/, async (msg, match) => {
+  bot.onText(/^\/filter(?!\w)(?:@\w+)?\s+(\w+)(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1221,12 +1239,12 @@ function filterCommands(bot: TelegramBot) {
     
     if (photoFileId) {
       settings.filters[word] = photoFileId;
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, `🔍 Filter added: when someone says '${word}', I'll send that photo.`);
     } else if (match[2]) {
       const reply = match[2];
       settings.filters[word] = reply;
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, `🔍 Filter added: when someone says '${word}', I'll reply: '${reply}'`);
     } else {
       await bot.sendMessage(chatId, 'Usage: /filter word reply_text\nExample: /filter done Hero');
@@ -1234,7 +1252,7 @@ function filterCommands(bot: TelegramBot) {
   });
 
   // /delfilter
-  bot.onText(/\/delfilter (\w+)/, async (msg, match) => {
+  bot.onText(/^\/delfilter(?!\w)(?:@\w+)?\s+(\w+)/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1253,7 +1271,7 @@ function filterCommands(bot: TelegramBot) {
     
     if (settings.filters[word]) {
       delete settings.filters[word];
-      saveData(loadData());
+      saveData(data);
       await bot.sendMessage(chatId, `✅ Filter removed for: ${word}`);
     } else {
       await bot.sendMessage(chatId, 'Filter not found.');
@@ -1264,7 +1282,7 @@ function filterCommands(bot: TelegramBot) {
 
 // /history
 function historyCommand(bot: TelegramBot) {
-  bot.onText(/\/history(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/history(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     
     if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
@@ -1353,7 +1371,7 @@ function historyCommand(bot: TelegramBot) {
 
 // /stats
 function statsCommand(bot: TelegramBot) {
-  bot.onText(/\/stats/, async (msg) => {
+  bot.onText(/^\/stats(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     
     if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
@@ -1381,7 +1399,7 @@ function statsCommand(bot: TelegramBot) {
 
 // /clean
 function cleanCommand(bot: TelegramBot) {
-  bot.onText(/\/clean/, async (msg) => {
+  bot.onText(/^\/clean(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1450,7 +1468,7 @@ let autoCleanIntervals: Record<string, NodeJS.Timeout> = {};
 
 function autoCleanCommands(bot: TelegramBot) {
   // /autoclean
-  bot.onText(/\/autoclean/, async (msg) => {
+  bot.onText(/^\/autoclean(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1493,7 +1511,7 @@ function autoCleanCommands(bot: TelegramBot) {
   });
 
   // /disableautoclean
-  bot.onText(/\/disableautoclean/, async (msg) => {
+  bot.onText(/^\/disableautoclean(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1609,8 +1627,11 @@ function messageHandler(bot: TelegramBot) {
     }
     
     if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
-    const botInfo = await bot.getMe();
-    if (user.id === botInfo.id) return;
+    if (cachedBotId === null) {
+      const botInfo = await bot.getMe();
+      cachedBotId = botInfo.id;
+    }
+    if (user.id === cachedBotId) return;
     
     const settings = getChatSettings(chatId);
     const isAdmin = await isGroupAdmin(bot, chatId, user.id);
@@ -1753,7 +1774,7 @@ function messageHandler(bot: TelegramBot) {
 
 // -------------------- /verify Command --------------------
 function verifyCommand(bot: TelegramBot) {
-  bot.onText(/\/verify/, async (msg) => {
+  bot.onText(/^\/verify(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1787,7 +1808,7 @@ function verifyCommand(bot: TelegramBot) {
 
 // -------------------- Security Commands (Anti-Spam) --------------------
 function securityCommands(bot: TelegramBot) {
-  bot.onText(/\/antispamon/, async (msg) => {
+  bot.onText(/^\/antispamon(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
@@ -1796,11 +1817,11 @@ function securityCommands(bot: TelegramBot) {
     }
     const settings = getChatSettings(chatId);
     settings.anti_spam = true;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '🛡️ Anti-spam protection enabled.');
   });
 
-  bot.onText(/\/antispamoff/, async (msg) => {
+  bot.onText(/^\/antispamoff(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
@@ -1809,11 +1830,11 @@ function securityCommands(bot: TelegramBot) {
     }
     const settings = getChatSettings(chatId);
     settings.anti_spam = false;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '🛡️ Anti-spam protection disabled.');
   });
 
-  bot.onText(/\/mediaoff/, async (msg) => {
+  bot.onText(/^\/mediaoff(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
@@ -1822,11 +1843,11 @@ function securityCommands(bot: TelegramBot) {
     }
     const settings = getChatSettings(chatId);
     settings.media_off = true;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '🚫 Media messages are now blocked for non-admins.');
   });
 
-  bot.onText(/\/mediaon/, async (msg) => {
+  bot.onText(/^\/mediaon(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
@@ -1835,14 +1856,14 @@ function securityCommands(bot: TelegramBot) {
     }
     const settings = getChatSettings(chatId);
     settings.media_off = false;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '✅ Media messages are now allowed.');
   });
 }
 
 // -------------------- Force Subscribe Command --------------------
 function forceSubscribeCommand(bot: TelegramBot) {
-  bot.onText(/\/forcesubscribe(?:\s+(.+))?/, async (msg, match) => {
+  bot.onText(/^\/forcesubscribe(?!\w)(?:@\w+)?(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
 
@@ -1897,7 +1918,7 @@ function forceSubscribeCommand(bot: TelegramBot) {
 
       const settings = getChatSettings(chatId);
       settings.force_subscribe = channelIdentifier;
-      saveData(loadData());
+      saveData(data);
 
       const channelType = isChannelId ? '🔒 Private' : '📢 Public';
       await bot.sendMessage(chatId, 
@@ -1923,7 +1944,7 @@ function forceSubscribeCommand(bot: TelegramBot) {
     }
   });
 
-  bot.onText(/\/forcesubscribeoff/, async (msg) => {
+  bot.onText(/^\/forcesubscribeoff(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     if (!userId || !await isGroupAdmin(bot, chatId, userId)) {
@@ -1932,14 +1953,14 @@ function forceSubscribeCommand(bot: TelegramBot) {
     }
     const settings = getChatSettings(chatId);
     settings.force_subscribe = null;
-    saveData(loadData());
+    saveData(data);
     await bot.sendMessage(chatId, '✅ Force subscribe disabled.');
   });
 }
 
 // -------------------- /checkbotpermissions --------------------
 function checkBotPermissionsCommand(bot: TelegramBot) {
-  bot.onText(/\/checkbotpermissions/, async (msg) => {
+  bot.onText(/^\/checkbotpermissions(?!\w)(?:@\w+)?/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
     
@@ -1976,10 +1997,9 @@ function checkBotPermissionsCommand(bot: TelegramBot) {
 }
 
 // Part 10: Promote/Demote, Admin Mention, Main Function
-
 // -------------------- Promote / Demote Commands --------------------
 function promoteDemoteCommands(bot: TelegramBot) {
-  bot.onText(/\/promote(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/promote(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
 
@@ -2033,7 +2053,7 @@ function promoteDemoteCommands(bot: TelegramBot) {
     }
   });
 
-  bot.onText(/\/demote(?:\s+@(\w+))?/, async (msg, match) => {
+  bot.onText(/^\/demote(?!\w)(?:@\w+)?(?:\s+@(\w+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from?.id;
 
@@ -2130,6 +2150,9 @@ function adminMentionHandler(bot: TelegramBot) {
 async function main(): Promise<void> {
   try {
     const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+
+    const selfInfo = await bot.getMe();
+    cachedBotId = selfInfo.id;
     
     console.log('🛡️ MRIXDU Protection Bot is running...');
     
