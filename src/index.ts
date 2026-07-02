@@ -1937,7 +1937,7 @@ function forceSubscribeCommand(bot: TelegramBot) {
   });
 }
 
-// -------------------- /checkbotpermissions (NEW) --------------------
+// -------------------- /checkbotpermissions --------------------
 function checkBotPermissionsCommand(bot: TelegramBot) {
   bot.onText(/\/checkbotpermissions/, async (msg) => {
     const chatId = msg.chat.id;
@@ -1959,7 +1959,7 @@ function checkBotPermissionsCommand(bot: TelegramBot) {
         permissions += `\n**Admin Rights:**\n`;
         permissions += `• Can restrict members: ${botMember.can_restrict_members ? '✅' : '❌'}\n`;
         permissions += `• Can delete messages: ${botMember.can_delete_messages ? '✅' : '❌'}\n`;
-        permissions += `• Can ban users: ${botMember.can_ban_users ? '✅' : '❌'}\n`;
+        // Removed can_ban_users - it doesn't exist
         permissions += `• Can invite users: ${botMember.can_invite_users ? '✅' : '❌'}\n`;
         permissions += `• Can pin messages: ${botMember.can_pin_messages ? '✅' : '❌'}\n`;
         permissions += `• Can change info: ${botMember.can_change_info ? '✅' : '❌'}\n`;
@@ -1973,7 +1973,8 @@ function checkBotPermissionsCommand(bot: TelegramBot) {
       await bot.sendMessage(chatId, `❌ Error: ${error.message}`);
     }
   });
-  }
+}
+
 // Part 10: Promote/Demote, Admin Mention, Main Function
 
 // -------------------- Promote / Demote Commands --------------------
