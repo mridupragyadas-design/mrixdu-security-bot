@@ -298,25 +298,21 @@ async function muteUser(bot: TelegramBot, chatId: number, userId: number, untilD
 // UPDATED unmuteUser – restores ALL permissions and logs errors
 async function unmuteUser(bot: TelegramBot, chatId: number, userId: number) {
   await bot.restrictChatMember(chatId, userId, {
-    permissions: {
-      can_send_messages: true,
-      can_send_audios: true,
-      can_send_documents: true,
-      can_send_photos: true,
-      can_send_videos: true,
-      can_send_video_notes: true,
-      can_send_voice_notes: true,
-      can_send_polls: true,
-      can_send_other_messages: true,
-      can_add_web_page_previews: true
-    }
+    can_send_messages: true,
+    can_send_audios: true,
+    can_send_documents: true,
+    can_send_photos: true,
+    can_send_videos: true,
+    can_send_video_notes: true,
+    can_send_voice_notes: true,
+    can_send_polls: true,
+    can_send_other_messages: true,
+    can_add_web_page_previews: true,
+    can_change_info: false,
+    can_invite_users: true,
+    can_pin_messages: false,
+    can_manage_topics: false
   } as any);
-}
-
-async function deleteMessageSafe(bot: TelegramBot, chatId: number, messageId: number): Promise<void> {
-  try {
-    await bot.deleteMessage(chatId, messageId);
-  } catch {}
 }
 
 // -------------------- Track User History --------------------
