@@ -4,12 +4,13 @@ compatibility_date = "2024-09-23"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "mrixdu-security-bot-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database id = "5a545b7e-380a-4e5b-9029-7dc42835e9b9"
+
+id = "392025d3162946a19978c46244d09e6c"
 
 [[kv_namespaces]]
 binding = "BOT_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "392025d3162946a19978c46244d09e6c"
 
 [triggers]
 crons = ["*/5 * * * *"]
