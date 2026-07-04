@@ -121,6 +121,7 @@ export function defaultChatSettings(): ChatSettings {
     permanent_night: false,
   };
 }
+
 // ==================== Part 2: Telegram Client ====================
 
 export class TelegramError extends Error {}
@@ -260,6 +261,7 @@ export const FULL_RESTORE_PERMISSIONS = {
   can_pin_messages: false,
   can_manage_topics: false,
 };
+
 // ==================== Part 3: D1 DB Helpers ====================
 
 export async function saveUser(env: Env, user: TgUser): Promise<void> {
@@ -282,6 +284,7 @@ export async function getUserByUsername(
     .first<{ user_id: number; full_name: string }>();
   return row ?? null;
 }
+
 // ==================== Part 4: KV Storage ====================
 
 const CHAT_LIST_KEY = 'meta:chat_list';
@@ -439,6 +442,7 @@ export async function getCachedBotId(env: Env): Promise<number | null> {
 export async function setCachedBotId(env: Env, id: number): Promise<void> {
   await env.BOT_KV.put('meta:bot_id', String(id));
 }
+
 // ==================== Part 5: Utilities ====================
 
 export function parseTimeWithAmPm(timeStr: string): string | null {
@@ -542,6 +546,7 @@ export async function trackUserHistory(env: Env, user: TgUser): Promise<void> {
   await saveUserHistory(env, userId, existing);
   if (user.username) await setUsernameToId(env, user.username, user.id);
 }
+
 // ==================== Part 6: Scan & Cleanup ====================
 
 export interface ScanResult {
@@ -638,6 +643,7 @@ export async function autoCleanJob(tg: Telegram, env: Env, chatId: number): Prom
     console.error('Auto clean error:', error);
   }
 }
+
 // ==================== Part 7: Static Texts ====================
 
 export const START_TEXT =
@@ -726,6 +732,7 @@ export const COMMANDS_TEXT =
   '• `/checkbotpermissions` - Check bot permissions\n' +
   '• `@admin` - Mention all admins\n' +
   '• `/commands` - Show this list';
+
 // ==================== Part 8: Context, Helpers, Callback & Pipeline ====================
 
 export interface Ctx {
@@ -995,7 +1002,8 @@ export async function runMessagePipeline(
   }
 
   return false;
-      }
+}
+
 // ==================== Part 9: Scheduler ====================
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
@@ -1073,6 +1081,7 @@ async function runAutoCleanTick(tg: Telegram, env: Env): Promise<void> {
     }
   }
 }
+
 // ==================== Part 10: Commands, Dispatcher, Handler & Worker ====================
 
 // ---- Moderation Commands ----
@@ -1901,14 +1910,3 @@ export default {
     ctx.waitUntil(runScheduledTasks(env));
   },
 };
-```
-
----
-
-Now you have all 10 parts. Concatenate them in order and save as src/index.ts. Then run:
-
-```bash
-npm run deploy
-```
-
-It should compile without duplicate‑declaration errors. Let me know if you need any clarification.
