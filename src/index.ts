@@ -1,3 +1,5 @@
+// ==================== Part 1: Types & Constants ====================
+
 export interface Env {
   DB: D1Database;
   BOT_KV: KVNamespace;
@@ -67,7 +69,6 @@ export interface TgChatMember {
   can_change_info?: boolean;
 }
 
-// -------------------- Bot data shapes (mirrors the original JSON files) ---
 export interface ChatSettings {
   night_mode: boolean;
   night_on: string;
@@ -117,10 +118,10 @@ export function defaultChatSettings(): ChatSettings {
     anti_spam: false,
     force_subscribe: null,
     media_off: false,
-    permanent_night: false
+    permanent_night: false,
   };
 }
-import type { TgChat, TgChatMember, TgMessage, TgUser } from './types';
+// ==================== Part 2: Telegram Client ====================
 
 export class TelegramError extends Error {}
 
@@ -135,7 +136,7 @@ export class Telegram {
     const res = await fetch(`${this.base}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify(params),
     });
     const json: any = await res.json();
     if (!json.ok) {
@@ -175,7 +176,7 @@ export class Telegram {
     return this.call<true>('unbanChatMember', {
       chat_id: chatId,
       user_id: userId,
-      only_if_banned: onlyIfBanned
+      only_if_banned: onlyIfBanned,
     });
   }
 
@@ -189,7 +190,7 @@ export class Telegram {
       chat_id: chatId,
       user_id: userId,
       permissions,
-      ...(untilDate ? { until_date: untilDate } : {})
+      ...(untilDate ? { until_date: untilDate } : {}),
     });
   }
 
@@ -240,7 +241,7 @@ export const FULL_RESTRICT_PERMISSIONS = {
   can_send_voice_notes: false,
   can_send_polls: false,
   can_send_other_messages: false,
-  can_add_web_page_previews: false
+  can_add_web_page_previews: false,
 };
 
 export const FULL_RESTORE_PERMISSIONS = {
@@ -257,9 +258,9 @@ export const FULL_RESTORE_PERMISSIONS = {
   can_change_info: false,
   can_invite_users: true,
   can_pin_messages: false,
-  can_manage_topics: false
+  can_manage_topics: false,
 };
-import type { Env, TgUser } from './types';
+// ==================== Part 3: D1 DB Helpers ====================
 
 export async function saveUser(env: Env, user: TgUser): Promise<void> {
   if (!user.username) return;
@@ -281,8 +282,7 @@ export async function getUserByUsername(
     .first<{ user_id: number; full_name: string }>();
   return row ?? null;
 }
-import type { ChatSettings, Env, ForceJoinWaiting, UserHistory } from './types';
-import { defaultChatSettings } from './types';
+// ==================== Part 4: KV Storage ====================
 
 const CHAT_LIST_KEY = 'meta:chat_list';
 const AUTOCLEAN_LIST_KEY = 'meta:autoclean_list';
@@ -301,7 +301,7 @@ function putJson(env: Env, key: string, value: unknown): Promise<void> {
   return env.BOT_KV.put(key, JSON.stringify(value));
 }
 
-// -------------------- Chat settings --------------------
+// --- Chat settings ---
 export async function getChatSettings(env: Env, chatId: number | string): Promise<ChatSettings> {
   const key = `settings:${chatId}`;
   const existing = await getJson<ChatSettings>(env, key);
@@ -328,7 +328,7 @@ export async function getAllChatIds(env: Env): Promise<number[]> {
   return (await getJson<number[]>(env, CHAT_LIST_KEY)) || [];
 }
 
-// -------------------- User history --------------------
+// --- User history ---
 export async function getUserHistory(env: Env, userId: number | string): Promise<UserHistory | null> {
   return getJson<UserHistory>(env, `history:${userId}`);
 }
@@ -337,8 +337,6 @@ export async function saveUserHistory(env: Env, userId: number | string, history
   await putJson(env, `history:${userId}`, history);
 }
 
-// A small reverse index so /history @username can find the user id without
-// scanning every history record (KV has no query support).
 export async function setUsernameToId(env: Env, username: string, userId: number): Promise<void> {
   await env.BOT_KV.put(`unameidx:${username.toLowerCase()}`, String(userId));
 }
@@ -348,7 +346,7 @@ export async function getIdByUsername(env: Env, username: string): Promise<numbe
   return raw ? Number(raw) : null;
 }
 
-// -------------------- Group member tracking --------------------
+// --- Group member tracking ---
 export async function getMembers(env: Env, chatId: number | string): Promise<number[]> {
   return (await getJson<number[]>(env, `members:${chatId}`)) || [];
 }
@@ -362,7 +360,7 @@ export async function saveMember(env: Env, chatId: number | string, userId: numb
   }
 }
 
-// -------------------- Force-subscribe waiting state --------------------
+// --- Force-subscribe waiting state ---
 export async function getForceJoinWaiting(env: Env, userId: number): Promise<ForceJoinWaiting | null> {
   return getJson<ForceJoinWaiting>(env, `forcejoin:${userId}`);
 }
@@ -375,8 +373,7 @@ export async function clearForceJoinWaiting(env: Env, userId: number): Promise<v
   await env.BOT_KV.delete(`forcejoin:${userId}`);
 }
 
-// -------------------- Anti-spam message tracker --------------------
-// Stores recent message timestamps (ms) per chat+user, self-pruned on read.
+// --- Anti-spam message tracker ---
 export async function trackSpamMessage(
   env: Env,
   chatId: number,
@@ -388,8 +385,6 @@ export async function trackSpamMessage(
   const existing = (await getJson<number[]>(env, key)) || [];
   const pruned = existing.filter((t) => now - t < windowSeconds * 1000);
   pruned.push(now);
-  // Expire the key shortly after the window closes so we don't accumulate
-  // stale spam-tracking keys forever.
   await env.BOT_KV.put(key, JSON.stringify(pruned), { expirationTtl: windowSeconds + 60 });
   return pruned.length;
 }
@@ -398,10 +393,10 @@ export async function resetSpamTracker(env: Env, chatId: number, userId: number)
   await env.BOT_KV.delete(`spam:${chatId}:${userId}`);
 }
 
-// -------------------- Auto-clean (per-chat, cron-driven) --------------------
+// --- Auto-clean state ---
 interface AutoCleanState {
   enabled: boolean;
-  lastRun: number; // epoch ms
+  lastRun: number;
 }
 
 export async function getAutoCleanState(env: Env, chatId: number | string): Promise<AutoCleanState> {
@@ -436,7 +431,6 @@ export async function getAutoCleanChatIds(env: Env): Promise<number[]> {
   return (await getJson<number[]>(env, AUTOCLEAN_LIST_KEY)) || [];
 }
 
-// -------------------- Cached bot id --------------------
 export async function getCachedBotId(env: Env): Promise<number | null> {
   const raw = await env.BOT_KV.get('meta:bot_id');
   return raw ? Number(raw) : null;
@@ -445,10 +439,7 @@ export async function getCachedBotId(env: Env): Promise<number | null> {
 export async function setCachedBotId(env: Env, id: number): Promise<void> {
   await env.BOT_KV.put('meta:bot_id', String(id));
 }
-import { Telegram, FULL_RESTRICT_PERMISSIONS, FULL_RESTORE_PERMISSIONS } from './telegram';
-import type { Env, TgUser } from './types';
-import { IST } from './types';
-import { getUserHistory, saveUserHistory, setUsernameToId } from './kv';
+// ==================== Part 5: Utilities ====================
 
 export function parseTimeWithAmPm(timeStr: string): string | null {
   const trimmed = timeStr.trim().toUpperCase();
@@ -475,13 +466,12 @@ export function isDeletedAccount(user: TgUser | undefined | null): boolean {
   return false;
 }
 
-// HH:mm in IST, using Intl instead of moment-timezone.
 export function getCurrentTimeIST(): string {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: IST,
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false
+    hour12: false,
   }).formatToParts(new Date());
   const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
   const minute = parts.find((p) => p.type === 'minute')?.value ?? '00';
@@ -497,7 +487,7 @@ export function getCurrentTimestampIST(): string {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false
+    hour12: false,
   });
   const parts = Object.fromEntries(dtf.formatToParts(new Date()).map((p) => [p.type, p.value]));
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
@@ -551,11 +541,8 @@ export async function trackUserHistory(env: Env, user: TgUser): Promise<void> {
 
   await saveUserHistory(env, userId, existing);
   if (user.username) await setUsernameToId(env, user.username, user.id);
-  }
-import { Telegram } from './telegram';
-import type { Env } from './types';
-import { getMembers, saveMember } from './kv';
-import { isDeletedAccount, getCurrentTimestampIST } from './utils';
+}
+// ==================== Part 6: Scan & Cleanup ====================
 
 export interface ScanResult {
   scanned: number;
@@ -651,6 +638,8 @@ export async function autoCleanJob(tg: Telegram, env: Env, chatId: number): Prom
     console.error('Auto clean error:', error);
   }
 }
+// ==================== Part 7: Static Texts ====================
+
 export const START_TEXT =
   '🛡️ **Welcome to MRIXDU Protection Bot**\n\n' +
   'Hey there! 👋\n\n' +
@@ -737,10 +726,7 @@ export const COMMANDS_TEXT =
   '• `/checkbotpermissions` - Check bot permissions\n' +
   '• `@admin` - Mention all admins\n' +
   '• `/commands` - Show this list';
-import { Telegram } from './telegram';
-import type { Env, TgMessage, TgUser } from './types';
-import { getUserByUsername } from './db';
-import { getIdByUsername } from './kv';
+// ==================== Part 8: Context, Helpers, Callback & Pipeline ====================
 
 export interface Ctx {
   tg: Telegram;
@@ -755,9 +741,6 @@ export function reply(ctx: Ctx, text: string, opts: Record<string, unknown> = {}
   return ctx.tg.sendMessage(ctx.chatId, text, opts);
 }
 
-// Resolves a command's target user from either a reply-to-message or an
-// "@username" argument, using the D1 lookup table (same behavior as the
-// original sqlite-backed getUserByUsername).
 export async function resolveTargetUser(
   ctx: Ctx,
   usernameArg: string | undefined
@@ -770,7 +753,7 @@ export async function resolveTargetUser(
     if (!userInfo) {
       return {
         user: null,
-        error: `❌ User @${usernameArg} not found in database.\nThey must have spoken in the group after the bot was added.`
+        error: `❌ User @${usernameArg} not found in database.\nThey must have spoken in the group after the bot was added.`,
       };
     }
     try {
@@ -783,18 +766,13 @@ export async function resolveTargetUser(
   return { user: null, error: null };
 }
 
-// Used by /history, which looks a user up across all chats via the KV
-// username index rather than the per-chat D1 table.
 export async function resolveHistoryUserId(ctx: Ctx, usernameArg: string | undefined): Promise<number | null> {
   if (ctx.msg.reply_to_message?.from) return ctx.msg.reply_to_message.from.id;
   if (usernameArg) return getIdByUsername(ctx.env, usernameArg.toLowerCase());
   return null;
 }
-import { Telegram } from './telegram';
-import type { Env, TgCallbackQuery } from './types';
-import { getForceJoinWaiting, clearForceJoinWaiting } from './kv';
-import { isUserInChannel, unmuteUser } from './utils';
 
+// --- Callback Query Handler ---
 export async function handleCallbackQuery(tg: Telegram, env: Env, cq: TgCallbackQuery): Promise<void> {
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
@@ -812,7 +790,7 @@ export async function handleCallbackQuery(tg: Telegram, env: Env, cq: TgCallback
     if (!info) {
       await tg.editMessageText('Verification expired. Please rejoin the group or contact an admin.', {
         chat_id: chatId,
-        message_id: messageId
+        message_id: messageId,
       });
       return;
     }
@@ -824,7 +802,7 @@ export async function handleCallbackQuery(tg: Telegram, env: Env, cq: TgCallback
         const userName = cq.from.username || cq.from.first_name;
         await tg.editMessageText(`✅ @${userName} has been verified and unmuted!`, {
           chat_id: chatId,
-          message_id: messageId
+          message_id: messageId,
         });
         await tg.sendMessage(info.chat_id, `✅ @${userName} has been verified and unmuted!`);
         await clearForceJoinWaiting(env, userId);
@@ -837,7 +815,7 @@ export async function handleCallbackQuery(tg: Telegram, env: Env, cq: TgCallback
     } else {
       await tg.answerCallbackQuery(cq.id, {
         text: "❌ You haven't joined the channel yet. Please join first, then click again.",
-        show_alert: true
+        show_alert: true,
       });
     }
     return;
@@ -846,21 +824,12 @@ export async function handleCallbackQuery(tg: Telegram, env: Env, cq: TgCallback
   if (cq.data === 'private_channel_info') {
     await tg.answerCallbackQuery(cq.id, {
       text: 'ℹ️ Please contact a group admin to get the invite link for the private channel.',
-      show_alert: true
+      show_alert: true,
     });
   }
 }
-import { Telegram, FULL_RESTRICT_PERMISSIONS } from './telegram';
-import type { Env, TgMessage } from './types';
-import { getChatSettings } from './kv';
-import { setForceJoinWaiting, getForceJoinWaiting, trackSpamMessage, resetSpamTracker } from './kv';
-import { isUserInChannel, unmuteUser, muteUser } from './utils';
-import { SPAM_WINDOW_SECONDS, SPAM_MAX_MSGS, MUTE_DURATION_SECONDS } from './types';
 
-/**
- * Runs the passive moderation pipeline against a non-command group message.
- * Returns true if the message was deleted/handled (caller should stop).
- */
+// --- Message Pipeline ---
 export async function runMessagePipeline(
   tg: Telegram,
   env: Env,
@@ -930,7 +899,10 @@ export async function runMessagePipeline(
       const member = await tg.getChatMember(chatId, user.id);
       if (member.status === 'restricted' && !member.can_send_messages) {
         await unmuteUser(tg, chatId, user.id);
-        await tg.sendMessage(chatId, `@${user.username || user.first_name} has joined ${channel} and has been unmuted automatically.`);
+        await tg.sendMessage(
+          chatId,
+          `@${user.username || user.first_name} has joined ${channel} and has been unmuted automatically.`
+        );
       }
     } catch {
       /* ignore */
@@ -1024,12 +996,7 @@ export async function runMessagePipeline(
 
   return false;
       }
-import { Telegram } from './telegram';
-import type { Env } from './types';
-import { DEFAULT_NIGHT_ON, DEFAULT_NIGHT_OFF } from './types';
-import { getAllChatIds, getChatSettings, saveChatSettings, getAutoCleanChatIds, getAutoCleanState, markAutoCleanRun } from './kv';
-import { getCurrentTimeIST } from './utils';
-import { autoCleanJob } from './scan';
+// ==================== Part 9: Scheduler ====================
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
@@ -1052,7 +1019,7 @@ async function runNightModeTick(tg: Telegram, env: Env): Promise<void> {
         await saveChatSettings(env, chatId, settings);
         try {
           await tg.sendMessage(chatId, '🌙 *Permanent Night Mode Active*\nAll non-admin messages will be deleted.', {
-            parse_mode: 'Markdown'
+            parse_mode: 'Markdown',
           });
         } catch {
           /* ignore */
@@ -1076,7 +1043,7 @@ async function runNightModeTick(tg: Telegram, env: Env): Promise<void> {
       await saveChatSettings(env, chatId, settings);
       try {
         await tg.sendMessage(chatId, '🌙 *Night Mode Enabled* (auto)\nAll non-admin messages will be deleted.', {
-          parse_mode: 'Markdown'
+          parse_mode: 'Markdown',
         });
       } catch {
         /* ignore */
@@ -1086,7 +1053,7 @@ async function runNightModeTick(tg: Telegram, env: Env): Promise<void> {
       await saveChatSettings(env, chatId, settings);
       try {
         await tg.sendMessage(chatId, '☀️ *Night Mode Disabled* (auto)\nMessage deletion turned off.', {
-          parse_mode: 'Markdown'
+          parse_mode: 'Markdown',
         });
       } catch {
         /* ignore */
@@ -1105,246 +1072,10 @@ async function runAutoCleanTick(tg: Telegram, env: Env): Promise<void> {
       await autoCleanJob(tg, env, chatId);
     }
   }
-    }
-import { Telegram } from './telegram';
-import type { Env, TgMessage } from './types';
-import type { Ctx } from './context';
-import { isGroupAdmin } from './utils';
-import { START_TEXT, COMMANDS_TEXT } from './text';
-import * as mod from './commands/moderation';
-import * as set from './commands/settings';
-import * as filt from './commands/filters';
-import * as clean from './commands/cleanup';
-import * as misc from './commands/misc';
-
-interface CommandDef {
-  requireGroup?: boolean;
-  requireAdmin?: boolean;
-  run: (ctx: Ctx, args: string) => Promise<void>;
 }
+// ==================== Part 10: Commands, Dispatcher, Handler & Worker ====================
 
-// Pulls a leading "@username" (without the @) out of an args string, if present.
-function firstUsernameArg(args: string): string | undefined {
-  const m = args.trim().match(/^@(\w+)/);
-  return m ? m[1] : undefined;
-}
-
-const commands: Record<string, CommandDef> = {
-  start: {
-    run: async (ctx) => {
-      if (ctx.msg.chat.type === 'private') {
-        await ctx.tg.sendMessage(ctx.chatId, START_TEXT, { parse_mode: 'Markdown', disable_web_page_preview: true });
-      } else {
-        await ctx.tg.sendMessage(ctx.chatId, 'Use /start in private chat to see my commands.');
-      }
-    }
-  },
-  commands: {
-    run: async (ctx) => {
-      if (ctx.msg.chat.type === 'private') {
-        await ctx.tg.sendMessage(ctx.chatId, COMMANDS_TEXT, { parse_mode: 'Markdown' });
-      }
-    }
-  },
-  checkadmin: { run: (ctx) => misc.cmdCheckAdmin(ctx) },
-  checkbotpermissions: { requireAdmin: true, run: (ctx) => misc.cmdCheckBotPermissions(ctx) },
-
-  nighton: { requireAdmin: true, run: (ctx, args) => set.cmdNightOn(ctx, args.trim() || undefined) },
-  nightoff: { requireAdmin: true, run: (ctx, args) => set.cmdNightOff(ctx, args.trim() || undefined) },
-  setnight: {
-    requireAdmin: true,
-    run: (ctx, args) => {
-      const [on, off] = args.trim().split(/\s+/);
-      return set.cmdSetNight(ctx, on, off);
-    }
-  },
-  antispamon: { requireAdmin: true, run: (ctx) => set.cmdAntiSpamOn(ctx) },
-  antispamoff: { requireAdmin: true, run: (ctx) => set.cmdAntiSpamOff(ctx) },
-  mediaoff: { requireAdmin: true, run: (ctx) => set.cmdMediaOff(ctx) },
-  mediaon: { requireAdmin: true, run: (ctx) => set.cmdMediaOn(ctx) },
-  forcesubscribe: { requireAdmin: true, run: (ctx, args) => set.cmdForceSubscribe(ctx, args.trim() || undefined) },
-  forcesubscribeoff: { requireAdmin: true, run: (ctx) => set.cmdForceSubscribeOff(ctx) },
-  verify: { run: (ctx) => set.cmdVerify(ctx) },
-
-  ban: { requireAdmin: true, run: (ctx, args) => mod.cmdBan(ctx, firstUsernameArg(args)) },
-  unban: { requireAdmin: true, run: (ctx, args) => mod.cmdUnban(ctx, firstUsernameArg(args)) },
-  kick: { requireAdmin: true, run: (ctx, args) => mod.cmdKick(ctx, firstUsernameArg(args)) },
-  mute: { requireAdmin: true, run: (ctx, args) => mod.cmdMute(ctx, firstUsernameArg(args)) },
-  unmute: { requireAdmin: true, run: (ctx, args) => mod.cmdUnmute(ctx, firstUsernameArg(args)) },
-  info: { requireAdmin: true, run: (ctx, args) => mod.cmdInfo(ctx, firstUsernameArg(args)) },
-  promote: { requireAdmin: true, run: (ctx, args) => mod.cmdPromote(ctx, firstUsernameArg(args)) },
-  demote: { requireAdmin: true, run: (ctx, args) => mod.cmdDemote(ctx, firstUsernameArg(args)) },
-
-  block: { requireAdmin: true, run: (ctx, args) => filt.cmdBlock(ctx, args.trim() || undefined) },
-  unblock: { requireAdmin: true, run: (ctx, args) => filt.cmdUnblock(ctx, args.trim() || undefined) },
-  blocksticker: { requireAdmin: true, run: (ctx) => filt.cmdBlockSticker(ctx) },
-  unblocksticker: { requireAdmin: true, run: (ctx) => filt.cmdUnblockSticker(ctx) },
-  banstickerpack: { requireAdmin: true, run: (ctx) => filt.cmdBanStickerPack(ctx) },
-  unbanstickerpack: { requireAdmin: true, run: (ctx) => filt.cmdUnbanStickerPack(ctx) },
-  pin: { requireAdmin: true, run: (ctx) => filt.cmdPin(ctx) },
-  filter: {
-    requireAdmin: true,
-    run: (ctx, args) => {
-      const trimmed = args.trim();
-      const spaceIdx = trimmed.indexOf(' ');
-      const word = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
-      const rest = spaceIdx === -1 ? undefined : trimmed.slice(spaceIdx + 1);
-      return filt.cmdFilter(ctx, word || undefined, rest);
-    }
-  },
-  delfilter: { requireAdmin: true, run: (ctx, args) => filt.cmdDelFilter(ctx, args.trim().split(/\s+/)[0]) },
-
-  history: { requireGroup: true, run: (ctx, args) => clean.cmdHistory(ctx, firstUsernameArg(args)) },
-  stats: { requireGroup: true, run: (ctx) => clean.cmdStats(ctx) },
-  clean: { requireGroup: true, requireAdmin: true, run: (ctx) => clean.cmdClean(ctx) },
-  autoclean: { requireGroup: true, requireAdmin: true, run: (ctx) => clean.cmdAutoClean(ctx) },
-  disableautoclean: { requireGroup: true, requireAdmin: true, run: (ctx) => clean.cmdDisableAutoClean(ctx) }
-};
-
-function parseCommand(text: string): { cmd: string; args: string } | null {
-  // Matches "/cmd", "/cmd@BotName args", "/cmd args" — the optional
-  // "@BotName" suffix is stripped without verifying it, since these groups
-  // only ever host this one bot.
-  const m = text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
-  if (!m) return null;
-  return { cmd: m[1].toLowerCase(), args: m[2] || '' };
-}
-
-export async function tryDispatchCommand(tg: Telegram, env: Env, msg: TgMessage, waitUntil: (p: Promise<unknown>) => void): Promise<boolean> {
-  const text = msg.text || '';
-  const parsed = parseCommand(text);
-  if (!parsed) return false;
-  const def = commands[parsed.cmd];
-  if (!def) return false;
-
-  const chatId = msg.chat.id;
-  const userId = msg.from?.id;
-  if (!userId) return true;
-
-  const ctx: Ctx = { tg, env, msg, chatId, userId, waitUntil };
-
-  if (def.requireGroup && msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await tg.sendMessage(chatId, '❌ This command only works in groups!');
-    return true;
-  }
-
-  if (def.requireAdmin) {
-    const admin = await isGroupAdmin(tg, chatId, userId);
-    if (!admin) {
-      await tg.sendMessage(chatId, '⚠️ Only group admins can use this command.');
-      return true;
-    }
-  }
-
-  await def.run(ctx, parsed.args);
-  return true;
-    }
-import { Telegram } from './telegram';
-import type { Env, TgUpdate } from './types';
-import { saveUser } from './db';
-import { trackUserHistory, isGroupAdmin } from './utils';
-import { saveMember } from './kv';
-import { tryDispatchCommand } from './dispatch';
-import { runMessagePipeline } from './pipeline';
-import { handleCallbackQuery } from './callback';
-import { handleAdminMention } from './commands/misc';
-import { runScheduledTasks } from './scheduler';
-
-async function handleUpdate(update: TgUpdate, env: Env, waitUntil: (p: Promise<unknown>) => void): Promise<void> {
-  const tg = new Telegram(env.BOT_TOKEN);
-
-  if (update.callback_query) {
-    await handleCallbackQuery(tg, env, update.callback_query);
-    return;
-  }
-
-  const msg = update.message;
-  if (!msg || !msg.from) return;
-
-  const user = msg.from;
-  const chatId = msg.chat.id;
-  const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
-
-  // Always track the user, mirroring the original messageHandler.
-  await saveUser(env, user);
-  await trackUserHistory(env, user);
-  if (isGroup) {
-    await saveMember(env, chatId, user.id);
-    if (msg.new_chat_members) {
-      for (const nu of msg.new_chat_members) await saveMember(env, chatId, nu.id);
-    }
-  }
-
-  // Try command dispatch first (covers /start, /commands in private chat too).
-  const handled = await tryDispatchCommand(tg, env, msg, waitUntil);
-  if (handled) return;
-
-  if (!isGroup) return;
-
-  // "@admin" mention (only for plain messages, not already-handled commands).
-  // Anyone can trigger this — no admin gate, matching the original bot.
-  const text = msg.text || '';
-  if (text.toLowerCase().includes('@admin')) {
-    await handleAdminMention({ tg, env, msg, chatId, userId: user.id, waitUntil });
-    return;
-  }
-
-  // Passive moderation pipeline (night mode, force-subscribe, filters, anti-spam).
-  const isAdmin = await isGroupAdmin(tg, chatId, user.id);
-  await runMessagePipeline(tg, env, msg, chatId, isAdmin);
-}
-
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/' && request.method === 'GET') {
-      return new Response('Mrixdu Security++ Bot is running!', { status: 200 });
-    }
-
-    // One-time setup helper: hit this URL from a browser once after deploying
-    // to register the webhook with Telegram. Protected by WEBHOOK_SECRET.
-    if (url.pathname === '/setup' && request.method === 'GET') {
-      const secret = url.searchParams.get('secret');
-      if (secret !== env.WEBHOOK_SECRET) {
-        return new Response('Forbidden', { status: 403 });
-      }
-      const tg = new Telegram(env.BOT_TOKEN);
-      const webhookUrl = `${url.origin}/webhook`;
-      await tg.setWebhook(webhookUrl, env.WEBHOOK_SECRET);
-      return new Response(`Webhook set to ${webhookUrl}`, { status: 200 });
-    }
-
-    if (url.pathname === '/webhook' && request.method === 'POST') {
-      const secretHeader = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-      if (secretHeader !== env.WEBHOOK_SECRET) {
-        return new Response('Forbidden', { status: 403 });
-      }
-      let update: TgUpdate;
-      try {
-        update = await request.json();
-      } catch {
-        return new Response('Bad Request', { status: 400 });
-      }
-      try {
-        await handleUpdate(update, env, (p) => ctx.waitUntil(p));
-      } catch (e) {
-        console.error('Error handling update:', e);
-      }
-      return new Response('OK', { status: 200 });
-    }
-
-    return new Response('Not Found', { status: 404 });
-  },
-
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runScheduledTasks(env));
-  }
-};
-import type { Ctx } from '../context';
-import { reply, resolveTargetUser } from '../context';
-import { unmuteUser } from '../utils';
-
+// ---- Moderation Commands ----
 export async function cmdBan(ctx: Ctx, usernameArg?: string) {
   const { user, error } = await resolveTargetUser(ctx, usernameArg);
   if (error) return void (await reply(ctx, error));
@@ -1464,7 +1195,7 @@ export async function cmdPromote(ctx: Ctx, usernameArg?: string) {
       can_pin_messages: true,
       can_promote_members: false,
       can_manage_chat: true,
-      can_manage_video_chats: true
+      can_manage_video_chats: true,
     });
     await reply(ctx, `⭐ Promoted ${user.first_name} to admin.`);
   } catch (e: any) {
@@ -1485,18 +1216,15 @@ export async function cmdDemote(ctx: Ctx, usernameArg?: string) {
       can_pin_messages: false,
       can_promote_members: false,
       can_manage_chat: false,
-      can_manage_video_chats: false
+      can_manage_video_chats: false,
     });
     await reply(ctx, `⬇️ Demoted ${user.first_name} from admin.`);
   } catch (e: any) {
     await reply(ctx, `Failed to demote: ${e.message}`);
   }
-    }
-import type { Ctx } from '../context';
-import { reply } from '../context';
-import { getChatSettings, saveChatSettings } from '../kv';
-import { parseTimeWithAmPm, isUserInChannel, unmuteUser } from '../utils';
+}
 
+// ---- Settings Commands ----
 export async function cmdNightOn(ctx: Ctx, permaArg?: string) {
   const settings = await getChatSettings(ctx.env, ctx.chatId);
   if (permaArg?.toLowerCase() === 'perma') {
@@ -1654,10 +1382,8 @@ export async function cmdVerify(ctx: Ctx) {
     await reply(ctx, `❌ You haven't joined ${channel} yet.\nPlease join first, then use /verify again.`);
   }
 }
-import type { Ctx } from '../context';
-import { reply } from '../context';
-import { getChatSettings, saveChatSettings } from '../kv';
 
+// ---- Filter Commands ----
 export async function cmdBlock(ctx: Ctx, wordsArg?: string) {
   if (!wordsArg) return void (await reply(ctx, 'Usage: /block word1 word2 ...'));
   const words = wordsArg.split(/\s+/);
@@ -1785,13 +1511,9 @@ export async function cmdDelFilter(ctx: Ctx, wordArg?: string) {
   } else {
     await reply(ctx, 'Filter not found.');
   }
-  }
-import type { Ctx } from '../context';
-import { reply, resolveHistoryUserId } from '../context';
-import { getUserHistory, getMembers, getAutoCleanState, setAutoCleanEnabled } from '../kv';
-import { getCurrentTimestampIST } from '../utils';
-import { doScan } from '../scan';
+}
 
+// ---- Cleanup Commands ----
 export async function cmdHistory(ctx: Ctx, usernameArg?: string) {
   const userId = await resolveHistoryUserId(ctx, usernameArg);
   if (!userId) {
@@ -1895,8 +1617,6 @@ export async function cmdClean(ctx: Ctx) {
     }
   };
 
-  // Scans can take a while for large groups; run in the background instead
-  // of blocking the webhook response.
   ctx.waitUntil(run());
 }
 
@@ -1915,9 +1635,8 @@ export async function cmdDisableAutoClean(ctx: Ctx) {
   await setAutoCleanEnabled(ctx.env, ctx.chatId, false);
   await reply(ctx, '🛑 <b>Auto Clean Disabled!</b>\n\n⚡ Powered by MRIXDU BOT', { parse_mode: 'HTML' });
 }
-import type { Ctx } from '../context';
-import { reply } from '../context';
 
+// ---- Misc Commands ----
 export async function cmdCheckAdmin(ctx: Ctx) {
   try {
     const me = await ctx.tg.getMe();
@@ -1970,3 +1689,226 @@ export async function handleAdminMention(ctx: Ctx) {
     await reply(ctx, `❌ Error: ${e.message}\nMake sure I am an admin and the group is a supergroup.`);
   }
 }
+
+// ---- Dispatcher ----
+interface CommandDef {
+  requireGroup?: boolean;
+  requireAdmin?: boolean;
+  run: (ctx: Ctx, args: string) => Promise<void>;
+}
+
+function firstUsernameArg(args: string): string | undefined {
+  const m = args.trim().match(/^@(\w+)/);
+  return m ? m[1] : undefined;
+}
+
+const commandMap: Record<string, CommandDef> = {
+  start: {
+    run: async (ctx) => {
+      if (ctx.msg.chat.type === 'private') {
+        await ctx.tg.sendMessage(ctx.chatId, START_TEXT, { parse_mode: 'Markdown', disable_web_page_preview: true });
+      } else {
+        await ctx.tg.sendMessage(ctx.chatId, 'Use /start in private chat to see my commands.');
+      }
+    },
+  },
+  commands: {
+    run: async (ctx) => {
+      if (ctx.msg.chat.type === 'private') {
+        await ctx.tg.sendMessage(ctx.chatId, COMMANDS_TEXT, { parse_mode: 'Markdown' });
+      }
+    },
+  },
+  checkadmin: { run: (ctx) => cmdCheckAdmin(ctx) },
+  checkbotpermissions: { requireAdmin: true, run: (ctx) => cmdCheckBotPermissions(ctx) },
+
+  nighton: { requireAdmin: true, run: (ctx, args) => cmdNightOn(ctx, args.trim() || undefined) },
+  nightoff: { requireAdmin: true, run: (ctx, args) => cmdNightOff(ctx, args.trim() || undefined) },
+  setnight: {
+    requireAdmin: true,
+    run: (ctx, args) => {
+      const [on, off] = args.trim().split(/\s+/);
+      return cmdSetNight(ctx, on, off);
+    },
+  },
+  antispamon: { requireAdmin: true, run: (ctx) => cmdAntiSpamOn(ctx) },
+  antispamoff: { requireAdmin: true, run: (ctx) => cmdAntiSpamOff(ctx) },
+  mediaoff: { requireAdmin: true, run: (ctx) => cmdMediaOff(ctx) },
+  mediaon: { requireAdmin: true, run: (ctx) => cmdMediaOn(ctx) },
+  forcesubscribe: { requireAdmin: true, run: (ctx, args) => cmdForceSubscribe(ctx, args.trim() || undefined) },
+  forcesubscribeoff: { requireAdmin: true, run: (ctx) => cmdForceSubscribeOff(ctx) },
+  verify: { run: (ctx) => cmdVerify(ctx) },
+
+  ban: { requireAdmin: true, run: (ctx, args) => cmdBan(ctx, firstUsernameArg(args)) },
+  unban: { requireAdmin: true, run: (ctx, args) => cmdUnban(ctx, firstUsernameArg(args)) },
+  kick: { requireAdmin: true, run: (ctx, args) => cmdKick(ctx, firstUsernameArg(args)) },
+  mute: { requireAdmin: true, run: (ctx, args) => cmdMute(ctx, firstUsernameArg(args)) },
+  unmute: { requireAdmin: true, run: (ctx, args) => cmdUnmute(ctx, firstUsernameArg(args)) },
+  info: { requireAdmin: true, run: (ctx, args) => cmdInfo(ctx, firstUsernameArg(args)) },
+  promote: { requireAdmin: true, run: (ctx, args) => cmdPromote(ctx, firstUsernameArg(args)) },
+  demote: { requireAdmin: true, run: (ctx, args) => cmdDemote(ctx, firstUsernameArg(args)) },
+
+  block: { requireAdmin: true, run: (ctx, args) => cmdBlock(ctx, args.trim() || undefined) },
+  unblock: { requireAdmin: true, run: (ctx, args) => cmdUnblock(ctx, args.trim() || undefined) },
+  blocksticker: { requireAdmin: true, run: (ctx) => cmdBlockSticker(ctx) },
+  unblocksticker: { requireAdmin: true, run: (ctx) => cmdUnblockSticker(ctx) },
+  banstickerpack: { requireAdmin: true, run: (ctx) => cmdBanStickerPack(ctx) },
+  unbanstickerpack: { requireAdmin: true, run: (ctx) => cmdUnbanStickerPack(ctx) },
+  pin: { requireAdmin: true, run: (ctx) => cmdPin(ctx) },
+  filter: {
+    requireAdmin: true,
+    run: (ctx, args) => {
+      const trimmed = args.trim();
+      const spaceIdx = trimmed.indexOf(' ');
+      const word = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+      const rest = spaceIdx === -1 ? undefined : trimmed.slice(spaceIdx + 1);
+      return cmdFilter(ctx, word || undefined, rest);
+    },
+  },
+  delfilter: { requireAdmin: true, run: (ctx, args) => cmdDelFilter(ctx, args.trim().split(/\s+/)[0]) },
+
+  history: { requireGroup: true, run: (ctx, args) => cmdHistory(ctx, firstUsernameArg(args)) },
+  stats: { requireGroup: true, run: (ctx) => cmdStats(ctx) },
+  clean: { requireGroup: true, requireAdmin: true, run: (ctx) => cmdClean(ctx) },
+  autoclean: { requireGroup: true, requireAdmin: true, run: (ctx) => cmdAutoClean(ctx) },
+  disableautoclean: { requireGroup: true, requireAdmin: true, run: (ctx) => cmdDisableAutoClean(ctx) },
+};
+
+function parseCommand(text: string): { cmd: string; args: string } | null {
+  const m = text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
+  if (!m) return null;
+  return { cmd: m[1].toLowerCase(), args: m[2] || '' };
+}
+
+export async function tryDispatchCommand(
+  tg: Telegram,
+  env: Env,
+  msg: TgMessage,
+  waitUntil: (p: Promise<unknown>) => void
+): Promise<boolean> {
+  const text = msg.text || '';
+  const parsed = parseCommand(text);
+  if (!parsed) return false;
+  const def = commandMap[parsed.cmd];
+  if (!def) return false;
+
+  const chatId = msg.chat.id;
+  const userId = msg.from?.id;
+  if (!userId) return true;
+
+  const ctx: Ctx = { tg, env, msg, chatId, userId, waitUntil };
+
+  if (def.requireGroup && msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await tg.sendMessage(chatId, '❌ This command only works in groups!');
+    return true;
+  }
+
+  if (def.requireAdmin) {
+    const admin = await isGroupAdmin(tg, chatId, userId);
+    if (!admin) {
+      await tg.sendMessage(chatId, '⚠️ Only group admins can use this command.');
+      return true;
+    }
+  }
+
+  await def.run(ctx, parsed.args);
+  return true;
+}
+
+// ---- Main Update Handler ----
+async function handleUpdate(update: TgUpdate, env: Env, waitUntil: (p: Promise<unknown>) => void): Promise<void> {
+  const tg = new Telegram(env.BOT_TOKEN);
+
+  if (update.callback_query) {
+    await handleCallbackQuery(tg, env, update.callback_query);
+    return;
+  }
+
+  const msg = update.message;
+  if (!msg || !msg.from) return;
+
+  const user = msg.from;
+  const chatId = msg.chat.id;
+  const isGroup = msg.chat.type === 'group' || msg.chat.type === 'supergroup';
+
+  await saveUser(env, user);
+  await trackUserHistory(env, user);
+  if (isGroup) {
+    await saveMember(env, chatId, user.id);
+    if (msg.new_chat_members) {
+      for (const nu of msg.new_chat_members) await saveMember(env, chatId, nu.id);
+    }
+  }
+
+  const handled = await tryDispatchCommand(tg, env, msg, waitUntil);
+  if (handled) return;
+
+  if (!isGroup) return;
+
+  const text = msg.text || '';
+  if (text.toLowerCase().includes('@admin')) {
+    await handleAdminMention({ tg, env, msg, chatId, userId: user.id, waitUntil });
+    return;
+  }
+
+  const isAdmin = await isGroupAdmin(tg, chatId, user.id);
+  await runMessagePipeline(tg, env, msg, chatId, isAdmin);
+}
+
+// ---- Worker Entry Point ----
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/' && request.method === 'GET') {
+      return new Response('Mrixdu Security++ Bot is running!', { status: 200 });
+    }
+
+    if (url.pathname === '/setup' && request.method === 'GET') {
+      const secret = url.searchParams.get('secret');
+      if (secret !== env.WEBHOOK_SECRET) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      const tg = new Telegram(env.BOT_TOKEN);
+      const webhookUrl = `${url.origin}/webhook`;
+      await tg.setWebhook(webhookUrl, env.WEBHOOK_SECRET);
+      return new Response(`Webhook set to ${webhookUrl}`, { status: 200 });
+    }
+
+    if (url.pathname === '/webhook' && request.method === 'POST') {
+      const secretHeader = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+      if (secretHeader !== env.WEBHOOK_SECRET) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      let update: TgUpdate;
+      try {
+        update = await request.json();
+      } catch {
+        return new Response('Bad Request', { status: 400 });
+      }
+      try {
+        await handleUpdate(update, env, (p) => ctx.waitUntil(p));
+      } catch (e) {
+        console.error('Error handling update:', e);
+      }
+      return new Response('OK', { status: 200 });
+    }
+
+    return new Response('Not Found', { status: 404 });
+  },
+
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runScheduledTasks(env));
+  },
+};
+```
+
+---
+
+Now you have all 10 parts. Concatenate them in order and save as src/index.ts. Then run:
+
+```bash
+npm run deploy
+```
+
+It should compile without duplicate‑declaration errors. Let me know if you need any clarification.
