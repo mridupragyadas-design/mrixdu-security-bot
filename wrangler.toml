@@ -1,4 +1,4 @@
-name = "mrixdu-security-bot"
+name = "mrixdu-security-bot1"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 
