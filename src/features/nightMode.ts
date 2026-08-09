@@ -94,6 +94,43 @@ export function registerNightMode(bot: Telegraf): void {
     scheduleNightMode(bot, ctx.chat.id);
     await ctx.reply(`🌙 Night Mode set: locks at ${parts[0]} IST, unlocks at ${parts[1]} IST.`);
   });
+
+  // Quick toggles that reuse whatever start/end times were last configured
+  // (or the 23:00–06:00 default if never set).
+  bot.command("nighton", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
+    const config = getChatConfig(ctx.chat.id);
+    config.nightMode.enabled = true;
+    saveChatConfig(ctx.chat.id, config);
+    scheduleNightMode(bot, ctx.chat.id);
+    await ctx.reply(
+      `🌙 Night Mode enabled: locks at ${config.nightMode.start} IST, unlocks at ${config.nightMode.end} IST.\nUse /setnight HH:MM HH:MM to change the times.`
+    );
+  });
+
+  bot.command("nightoff", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
+    const config = getChatConfig(ctx.chat.id);
+    config.nightMode.enabled = false;
+    const wasLocked = config.wasLockedByNightMode;
+    config.wasLockedByNightMode = false;
+    saveChatConfig(ctx.chat.id, config);
+    clearSchedules(ctx.chat.id);
+
+    if (wasLocked) {
+      try {
+        await ctx.telegram.setChatPermissions(ctx.chat.id, {
+          can_send_messages: true,
+          can_send_photos: true,
+          can_send_videos: true,
+          can_send_other_messages: true,
+        });
+      } catch {
+        // ignore, e.g. bot lost admin rights
+      }
+    }
+    await ctx.reply("☀️ Night Mode disabled.");
+  });
 }
 
 // Call once at startup to re-arm schedules for all chats that had night mode enabled

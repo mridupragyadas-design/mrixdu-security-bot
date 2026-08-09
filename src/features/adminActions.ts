@@ -46,6 +46,44 @@ export function registerAdminActions(bot: Telegraf): void {
     }
   });
 
+  bot.command("unban", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
+    const chatId = ctx.chat.id;
+    const targetId = targetUserFromReplyOrArg(ctx);
+    if (!targetId) {
+      return ctx.reply("Usage: /unban <user_id>  (unban needs the numeric ID since a banned user can't be replied to)");
+    }
+    try {
+      await ctx.telegram.unbanChatMember(chatId, targetId, { only_if_banned: true });
+      await ctx.reply(`✅ User ${targetId} has been unbanned.`);
+    } catch (err) {
+      await ctx.reply(`Couldn't unban that user: ${(err as Error).message}`);
+    }
+  });
+
+  bot.command("unmute", async (ctx) => {
+    if (!(await requireAdmin(ctx))) return;
+    const chatId = ctx.chat.id;
+    const targetId = targetUserFromReplyOrArg(ctx);
+    if (!targetId) {
+      return ctx.reply("Reply to a user's message with /unmute, or use /unmute <user_id>.");
+    }
+    try {
+      await ctx.telegram.restrictChatMember(chatId, targetId, {
+        permissions: {
+          can_send_messages: true,
+          can_send_photos: true,
+          can_send_videos: true,
+          can_send_other_messages: true,
+        },
+        until_date: 0,
+      });
+      await ctx.reply(`🔊 User ${targetId} has been unmuted.`);
+    } catch (err) {
+      await ctx.reply(`Couldn't unmute that user: ${(err as Error).message}`);
+    }
+  });
+
   bot.command("mute", async (ctx) => {
     if (!(await requireAdmin(ctx))) return;
     const chatId = ctx.chat.id;
