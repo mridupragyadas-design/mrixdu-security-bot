@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import fs from "fs";
 import path from "path";
+import http from "http";
 
 import { registerAdminActions } from "./features/adminActions";
 import { registerMediaOnly } from "./features/mediaOnly";
@@ -70,7 +71,25 @@ bot.catch((err, ctx) => {
   console.error(`Error handling update ${ctx.updateType}:`, err);
 });
 
+// Render's Web Service plan requires the app to bind to a port, or it
+// assumes the deploy failed. This bot doesn't need to serve HTTP traffic —
+// it just polls Telegram — so this is a minimal server purely to satisfy
+// that health check. It returns 200 OK to any request.
+function startHealthCheckServer(): void {
+  const port = process.env.PORT || 3000;
+  http
+    .createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("Bot is running.");
+    })
+    .listen(port, () => {
+      console.log(`Health check server listening on port ${port}`);
+    });
+}
+
 async function main() {
+  startHealthCheckServer();
+
   // Re-arm night mode schedules for any chats that had it enabled before restart
   const dbPath = path.join(__dirname, "..", "data", "db.json");
   if (fs.existsSync(dbPath)) {
