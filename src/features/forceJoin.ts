@@ -70,11 +70,12 @@ export function registerForceJoin(bot: Telegraf): void {
     const config = getChatConfig(ctx.chat.id);
     if (!config.forceJoinChannel) return;
     const newMembers = (ctx.message as any).new_chat_members as any[];
+    const chatTitle = (ctx.chat as any).title || "Group";
     for (const member of newMembers) {
       if (member.is_bot) continue;
       const alreadyMember = await isChannelMember(ctx.telegram, config.forceJoinChannel, member.id);
       if (alreadyMember) continue;
-      await sendVerificationGate(bot, ctx.chat.id, ctx.chat.title || "Group", member.id, member.first_name);
+      await sendVerificationGate(bot, ctx.chat.id, chatTitle, member.id, member.first_name);
     }
   });
 
@@ -95,7 +96,8 @@ export function registerForceJoin(bot: Telegraf): void {
     } catch {
       // ignore
     }
-    await sendVerificationGate(bot, ctx.chat.id, ctx.chat.title || "Group", userId, ctx.from?.first_name || "there");
+    const chatTitle = (ctx.chat as any).title || "Group";
+    await sendVerificationGate(bot, ctx.chat.id, chatTitle, userId, ctx.from?.first_name || "there");
   });
 
   // "OK | I subscribed" button
