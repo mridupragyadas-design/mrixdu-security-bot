@@ -1,4 +1,5 @@
 import { Context } from "telegraf";
+import { getChatConfig } from "./db";
 
 export async function isUserAdmin(ctx: Context, userId?: number): Promise<boolean> {
   const chat = ctx.chat;
@@ -62,7 +63,13 @@ export function targetUserFromReplyOrArg(ctx: any): number | null {
   const reply = ctx.message?.reply_to_message;
   if (reply?.from?.id) return reply.from.id;
   const arg = ctx.message?.text?.split(" ")[1];
-  if (arg && /^\d+$/.test(arg)) return parseInt(arg, 10);
+  if (!arg) return null;
+  if (/^\d+$/.test(arg)) return parseInt(arg, 10);
+  if (arg.startsWith("@")) {
+    const config = getChatConfig(ctx.chat.id);
+    const uname = arg.slice(1).toLowerCase();
+    return config.usernameToId[uname] ?? null;
+  }
   return null;
 }
 
