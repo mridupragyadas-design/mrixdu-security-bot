@@ -94,8 +94,11 @@ export function registerStats(bot: Telegraf): void {
     });
 
     const periodLabel = period === "today" ? "Today" : period === "month" ? "This Month" : "This Week";
-    await ctx.reply(`🏆 *Leaderboard — ${periodLabel}*\n\n${lines.join("\n")}\n\nTip: /leaderboard today|week|month`, {
-      parse_mode: "Markdown",
-    });
+    // Deliberately plain text, no parse_mode: usernames can contain almost
+    // any character (including ones that break Markdown/HTML parsing), and
+    // this list is just a readout, not something that needs bold/italic.
+    await ctx.reply(
+      `🏆 Leaderboard — ${periodLabel}\n\n${lines.join("\n")}\n\nTip: /leaderboard today|week|month`
+    );
   });
 }
