@@ -61,7 +61,7 @@ Hello\\! I am your automated moderator, designed to keep your community safe, cl
 ✅ Force Join: Verification for Channel
 ✅ Edit Guardian: Anti\\-spam edit removal
 ✅ Anti\\-Spam: Flood protection
-✅ Night Mode: Auto\-delete window
+✅ Night Mode: Auto\\-delete window
 
 _Developed by MRIXDU for @BGMIPOPULARITYOG_`;
 
