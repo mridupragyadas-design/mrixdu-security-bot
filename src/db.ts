@@ -89,12 +89,26 @@ async function flush(): Promise<void> {
   }
 }
 
+// Fills in any fields that didn't exist yet when a chat's record was first
+// saved (e.g. an older bot version), so accessing a newly-added field on an
+// old record never crashes with "Cannot read properties of undefined".
+function withDefaults(stored: Partial<ChatConfig>): ChatConfig {
+  const defaults = defaultChatConfig();
+  return {
+    ...defaults,
+    ...stored,
+    nightMode: { ...defaults.nightMode, ...(stored.nightMode || {}) },
+  };
+}
+
 export function getChatConfig(chatId: number): ChatConfig {
   const key = String(chatId);
   if (!cache.chats[key]) {
     cache.chats[key] = defaultChatConfig();
     pendingWrites.add(key);
     scheduleFlush();
+  } else {
+    cache.chats[key] = withDefaults(cache.chats[key]);
   }
   return cache.chats[key];
 }
