@@ -1,7 +1,6 @@
 import { Telegraf } from "telegraf";
 import { requireAdmin, targetUserFromReplyOrArg, isReplyToMessage } from "../utils";
 
-// Parses duration strings like "10m", "2h", "1d" into seconds. Returns 0 for permanent.
 function parseDuration(input?: string): number {
   if (!input) return 0;
   const match = /^(\d+)([mhd])$/.exec(input.trim());
@@ -10,7 +9,24 @@ function parseDuration(input?: string): number {
   const unit = match[2];
   if (unit === "m") return amount * 60;
   if (unit === "h") return amount * 3600;
-  return amount * 86400; // d
+  return amount * 86400;
+}
+
+function explainMissingTarget(ctx: any, commandName: string, extra = ""): void {
+  const arg = (ctx.message as any).text.split(" ")[1];
+  if (arg && arg.startsWith("@")) {
+    ctx.reply(
+      `Couldn't find ${arg} — I can only resolve usernames for people who've sent at least one ` +
+        `message in this group since this feature was added. Try replying to their message instead, ` +
+        `or use their numeric user ID.`
+    );
+    return;
+  }
+  ctx.reply(
+    `Reply to a user's message with /${commandName}, or use /${commandName} <user_id> or /${commandName} @username` +
+      (extra ? ` ${extra}` : "") +
+      ` (username only works if they've posted here before).`
+  );
 }
 
 export function registerAdminActions(bot: Telegraf): void {
@@ -18,9 +34,7 @@ export function registerAdminActions(bot: Telegraf): void {
     if (!(await requireAdmin(ctx))) return;
     const chatId = ctx.chat.id;
     const targetId = targetUserFromReplyOrArg(ctx);
-    if (!targetId) {
-      return ctx.reply("Reply to a user's message with /ban, or use /ban <user_id>.");
-    }
+    if (!targetId) return explainMissingTarget(ctx, "ban");
     try {
       await ctx.telegram.banChatMember(chatId, targetId);
       await ctx.reply(`🔨 User ${targetId} has been banned.`);
@@ -33,11 +47,8 @@ export function registerAdminActions(bot: Telegraf): void {
     if (!(await requireAdmin(ctx))) return;
     const chatId = ctx.chat.id;
     const targetId = targetUserFromReplyOrArg(ctx);
-    if (!targetId) {
-      return ctx.reply("Reply to a user's message with /kick, or use /kick <user_id>.");
-    }
+    if (!targetId) return explainMissingTarget(ctx, "kick");
     try {
-      // Ban then immediately unban = kick (removes without a permanent ban)
       await ctx.telegram.banChatMember(chatId, targetId);
       await ctx.telegram.unbanChatMember(chatId, targetId);
       await ctx.reply(`👢 User ${targetId} has been kicked.`);
@@ -51,7 +62,7 @@ export function registerAdminActions(bot: Telegraf): void {
     const chatId = ctx.chat.id;
     const targetId = targetUserFromReplyOrArg(ctx);
     if (!targetId) {
-      return ctx.reply("Usage: /unban <user_id>  (unban needs the numeric ID since a banned user can't be replied to)");
+      return explainMissingTarget(ctx, "unban", "(a banned user can't be replied to, so use their ID or username)");
     }
     try {
       await ctx.telegram.unbanChatMember(chatId, targetId, { only_if_banned: true });
@@ -65,9 +76,7 @@ export function registerAdminActions(bot: Telegraf): void {
     if (!(await requireAdmin(ctx))) return;
     const chatId = ctx.chat.id;
     const targetId = targetUserFromReplyOrArg(ctx);
-    if (!targetId) {
-      return ctx.reply("Reply to a user's message with /unmute, or use /unmute <user_id>.");
-    }
+    if (!targetId) return explainMissingTarget(ctx, "unmute");
     try {
       await ctx.telegram.restrictChatMember(chatId, targetId, {
         permissions: {
@@ -88,12 +97,9 @@ export function registerAdminActions(bot: Telegraf): void {
     if (!(await requireAdmin(ctx))) return;
     const chatId = ctx.chat.id;
     const targetId = targetUserFromReplyOrArg(ctx);
-    if (!targetId) {
-      return ctx.reply("Reply to a user's message with /mute [duration], e.g. /mute 30m, /mute 2h, /mute 1d. Omit duration to mute indefinitely.");
-    }
+    if (!targetId) return explainMissingTarget(ctx, "mute", "[duration], e.g. /mute @user 30m, /mute @user 2h");
     const text = (ctx.message as any)?.text as string;
     const parts = text.split(" ");
-    // Duration is whichever arg isn't the numeric user id (if using reply, arg[1] is duration)
     const durationArg = isReplyToMessage(ctx) ? parts[1] : parts[2];
     const seconds = parseDuration(durationArg);
     const untilDate = seconds > 0 ? Math.floor(Date.now() / 1000) + seconds : 0;
