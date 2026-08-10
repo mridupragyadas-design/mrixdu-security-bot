@@ -42,9 +42,10 @@ export function registerStats(bot: Telegraf): void {
       const config = getChatConfig(ctx.chat.id);
       const key = String(userId);
       const todayKey = getISTDateKey();
-      if (!config.messageStats[key]) config.messageStats[key] = {};
-      config.messageStats[key][todayKey] = (config.messageStats[key][todayKey] || 0) + 1;
       config.userNames[key] = ctx.from.first_name || config.userNames[key] || "Someone";
+      if (ctx.from.username) {
+        config.usernameToId[ctx.from.username.toLowerCase()] = userId;
+      }
       saveChatConfig(ctx.chat.id, config);
     }
     return next();
