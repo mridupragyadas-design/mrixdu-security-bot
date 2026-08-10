@@ -20,6 +20,7 @@ export interface ChatConfig {
   knownUserIds: number[]; // users we've seen post, for /clean best-effort
   messageStats: MessageStats;
   userNames: Record<string, string>; // userId -> last known first name, for leaderboard display
+  usernameToId: Record<string, number>; // lowercase @username (no @) -> userId, for username-based commands
 }
 
 export const defaultChatConfig = (): ChatConfig => ({
@@ -35,6 +36,7 @@ export const defaultChatConfig = (): ChatConfig => ({
   knownUserIds: [],
   messageStats: {},
   userNames: {},
+  usernameToId: {},
 });
 
 export interface Database {
