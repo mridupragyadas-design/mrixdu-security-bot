@@ -23,7 +23,6 @@ export async function requireAdmin(ctx: Context): Promise<boolean> {
 }
 
 export function mentionUser(id: number, name: string): string {
-  // MarkdownV2-safe inline mention that works even without a username
   const escaped = escapeMarkdownV2(name);
   return `[${escaped}](tg://user?id=${id})`;
 }
@@ -40,7 +39,6 @@ export function mentionUserHtml(id: number, name: string): string {
   return `<a href="tg://user?id=${id}">${escapeHtml(name)}</a>`;
 }
 
-// Formats a Date as "DD/MM/YYYY HH:MM:SS" to match common moderation-bot styling
 export function formatDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(
@@ -48,7 +46,6 @@ export function formatDateTime(date: Date): string {
   )}:${pad(date.getSeconds())}`;
 }
 
-// Parses "HH:MM" -> { hour, minute } or null if invalid
 export function parseTime(value: string): { hour: number; minute: number } | null {
   const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value.trim());
   if (!match) return null;
@@ -68,12 +65,11 @@ export function targetUserFromReplyOrArg(ctx: any): number | null {
   if (arg.startsWith("@")) {
     const config = getChatConfig(ctx.chat.id);
     const uname = arg.slice(1).toLowerCase();
-    return config.usernameToId[uname] ?? null;
+    return config.usernameToId?.[uname] ?? null;
   }
   return null;
 }
 
-// Current hour/minute in IST (Asia/Kolkata), used for night mode window checks
 export function getISTTime(): { hour: number; minute: number } {
   const fmt = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
@@ -87,7 +83,6 @@ export function getISTTime(): { hour: number; minute: number } {
   return { hour, minute };
 }
 
-// "YYYY-MM-DD" for the given date, in IST. en-CA locale conveniently formats this way.
 export function getISTDateKey(date: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kolkata",
