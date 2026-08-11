@@ -83,14 +83,15 @@ export function registerForceJoin(bot: Telegraf): void {
   // Fallback for users who joined before Force Join was turned on, or whose
   // mute already expired: catch their message and re-gate them.
   bot.on("message", async (ctx, next) => {
-  const config = getChatConfig(ctx.chat.id);
-  if (!config.forceJoinChannel) return next();
-  if (ctx.chat.type === "private") return next();
-  if ((ctx as any).senderChat || ctx.from?.id === 777000) return next(); // skip channel posts
-  const userId = ctx.from?.id;
-  if (!userId) return next();
+    const config = getChatConfig(ctx.chat.id);
+    if (!config.forceJoinChannel) return next();
+    if (ctx.chat.type === "private") return next();
+    if ((ctx as any).senderChat || ctx.from?.id === 777000) return next(); // skip channel posts
+    const userId = ctx.from?.id;
+    if (!userId) return next();
+    if (await isUserAdmin(ctx)) return next(); // group admins are exempt from the force-join gate
 
-  const member = await isChannelMember(ctx.telegram, config.forceJoinChannel, userId);
+    const member = await isChannelMember(ctx.telegram, config.forceJoinChannel, userId);
     if (member) return next();
 
     try {
