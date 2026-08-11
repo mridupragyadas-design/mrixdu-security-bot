@@ -139,4 +139,74 @@ export function registerAdminActions(bot: Telegraf): void {
       await ctx.reply(`Couldn't fetch info: ${(err as Error).message}`);
     }
   });
+
+  bot.command("promote", async (ctx) => {
+  if (!(await requireAdmin(ctx))) return;
+  const chatId = ctx.chat.id;
+  const targetId = targetUserFromReplyOrArg(ctx);
+  if (!targetId) return explainMissingTarget(ctx, "promote");
+  const titleArg = isReplyToMessage(ctx)
+    ? (ctx.message as any).text.split(" ").slice(1).join(" ").trim()
+    : (ctx.message as any).text.split(" ").slice(2).join(" ").trim();
+  try {
+    await ctx.telegram.promoteChatMember(chatId, targetId, {
+      can_change_info: true,
+      can_delete_messages: true,
+      can_invite_users: true,
+      can_restrict_members: true,
+      can_pin_messages: true,
+      can_promote_members: false,
+      can_manage_video_chats: true,
+    });
+    if (titleArg) {
+      try {
+        await ctx.telegram.setChatAdministratorCustomTitle(chatId, targetId, titleArg.slice(0, 16));
+      } catch {
+        // custom title is best-effort (e.g. bot lacks rights, or target is the chat owner)
+      }
+    }
+    await ctx.reply(`⬆️ User ${targetId} has been promoted to admin.`);
+  } catch (err) {
+    await ctx.reply(`Couldn't promote that user: ${(err as Error).message}`);
+  }
+});
+
+bot.command("demote", async (ctx) => {
+  if (!(await requireAdmin(ctx))) return;
+  const chatId = ctx.chat.id;
+  const targetId = targetUserFromReplyOrArg(ctx);
+  if (!targetId) return explainMissingTarget(ctx, "demote");
+  try {
+    await ctx.telegram.promoteChatMember(chatId, targetId, {
+      can_change_info: false,
+      can_delete_messages: false,
+      can_invite_users: false,
+      can_restrict_members: false,
+      can_pin_messages: false,
+      can_promote_members: false,
+      can_manage_video_chats: false,
+    });
+    await ctx.reply(`⬇️ User ${targetId} has been demoted.`);
+  } catch (err) {
+    await ctx.reply(`Couldn't demote that user: ${(err as Error).message}`);
+  }
+});
+
+bot.command("del", async (ctx) => {
+  if (!(await requireAdmin(ctx))) return;
+  const reply = (ctx.message as any).reply_to_message;
+  if (!reply) {
+    return ctx.reply("Reply to the message you want to delete with /del.");
+  }
+  try {
+    await ctx.telegram.deleteMessage(ctx.chat.id, reply.message_id);
+    try {
+      await ctx.deleteMessage(); // also remove the /del command itself
+    } catch {
+      // ignore
+    }
+  } catch (err) {
+    await ctx.reply(`Couldn't delete that message: ${(err as Error).message}`);
+  }
+});
 }
