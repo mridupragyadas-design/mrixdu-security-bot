@@ -1,6 +1,6 @@
 import { Telegraf, Markup } from "telegraf";
 import { getChatConfig } from "../db";
-import { mentionUserHtml, formatDateTime } from "../utils";
+import { mentionUserHtml, formatDateTime, isUserAdmin } from "../utils";
 
 const MUTE_DURATION_SECONDS = 24 * 60 * 60; // fallback auto-unmute if they never verify
 
@@ -73,6 +73,7 @@ export function registerForceJoin(bot: Telegraf): void {
     const chatTitle = (ctx.chat as any).title || "Group";
     for (const member of newMembers) {
       if (member.is_bot) continue;
+      if (await isUserAdmin(ctx, member.id)) continue; // admins are exempt from the gate
       const alreadyMember = await isChannelMember(ctx.telegram, config.forceJoinChannel, member.id);
       if (alreadyMember) continue;
       await sendVerificationGate(bot, ctx.chat.id, chatTitle, member.id, member.first_name);
