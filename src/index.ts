@@ -68,9 +68,10 @@ _Developed by MRIXDU for @BGMIPOPULARITYOG_`;
 bot.start((ctx) => ctx.replyWithMarkdownV2(HELP_TEXT));
 bot.help((ctx) => ctx.replyWithMarkdownV2(HELP_TEXT));
 
-// Order matters: deletion/enforcement handlers run before things like
-// stats tracking and auto-reply filters, so a message that gets removed
-// doesn't also get counted or replied to.
+// Stats tracking runs first so every message — including ones handled by a
+// command below, or later deleted by moderation — gets counted exactly once.
+// Everything after it still runs normally via next().
+registerStats(bot);
 registerNightMode(bot);
 registerAntiSpam(bot);
 registerMedia(bot);
@@ -84,7 +85,6 @@ registerAdminActions(bot);
 registerEditGuardian(bot);
 registerAdminAlert(bot);
 registerClean(bot);
-registerStats(bot);
 
 bot.catch((err, ctx) => {
   console.error(`Error handling update ${ctx.updateType}:`, err);
