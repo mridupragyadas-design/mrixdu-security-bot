@@ -63,7 +63,7 @@ Hello\\! I am your automated moderator, designed to keep your community safe, cl
 ✅ Anti\\-Spam: Flood protection
 ✅ Night Mode: Auto\\-delete window
 
-_Developed by MRIXDU for @populairtyhub_`;
+_Developed by MRIXDU for @BGMIPOPULARITYOG_`;
 
 bot.start((ctx) => ctx.replyWithMarkdownV2(HELP_TEXT));
 bot.help((ctx) => ctx.replyWithMarkdownV2(HELP_TEXT));
