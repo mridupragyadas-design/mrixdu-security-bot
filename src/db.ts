@@ -8,7 +8,14 @@ import { ChatConfig, Database, defaultChatConfig } from "./types";
 // the web service's local disk. Without it, falls back to a local JSON file
 // for convenience during local development only.
 const DATABASE_URL = process.env.DATABASE_URL;
-const pool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } }) : null;
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: process.env.AIVEN_CA_CERT
+        ? { ca: process.env.AIVEN_CA_CERT, rejectUnauthorized: true }
+        : { rejectUnauthorized: false },
+    })
+  : null;
 
 const JSON_DB_PATH = path.join(__dirname, "..", "data", "db.json");
 
